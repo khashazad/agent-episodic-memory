@@ -16,8 +16,8 @@ class VideoRewardBase(nn.Module):
         self.temporal_encoder = temporal_encoder
         self.reward_head = reward_head
 
-import mineclip.base
-mineclip.base.VideoRewardBase = VideoRewardBase
+import mineclip.mineclip.base
+mineclip.mineclip.base.VideoRewardBase = VideoRewardBase
 
 from mineclip.mineclip import MineCLIP
 
