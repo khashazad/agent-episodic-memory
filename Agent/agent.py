@@ -14,10 +14,20 @@ import os
 from collections import deque
 import matplotlib.pyplot as plt
 
-with open('config.json', 'r') as f:
-    config = json.load(f)
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    openai_key = config.get('openai_token')
+except Exception:
+    openai_key = None
 
-os.environ["OPENAI_API_KEY"] = config['openai_token']
+if not openai_key:
+    openai_key = os.environ.get("OPENAI_API_KEY")
+
+if not openai_key:
+    raise ValueError("OPENAI_API_KEY not found")
+
+os.environ["OPENAI_API_KEY"] = openai_key
 ACTION_HISTORY = deque(maxlen=5)
 
 MINERL_ACTION_TEMPLATE = {
@@ -88,7 +98,7 @@ def create_env():
 
     # Start the docker container in detached mode and capture its ID
     proc = subprocess.run(
-        ["docker", "run", "--rm", "-d", "-p", "5000:5000", "strangeman44/minerl-env-server"],
+        ["docker", "run", "--rm", "-d", "-p", "5001:5000", "strangeman44/minerl-env-server"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -100,13 +110,13 @@ def create_env():
 
     print('Setting up environment...')
     print('LONG WAIT')
-    resp = requests.get(url='http://127.0.0.1:5000/start')
+    resp = requests.get(url='http://127.0.0.1:5001/start')
 
     if resp.status_code != 200:
         raise RuntimeError(f'Status code error: {resp.status_code}')
 
     #obs = process_image(resp.json()['obs'])
-    
+
     return resp.json()['obs']
 
 # The tool that the LLM can use
@@ -159,7 +169,7 @@ def step_env(action: Literal["attack", "back", "forward", "left", "right", "jump
 
     # Send request to env server
     resp = requests.post(
-        url="http://127.0.0.1:5000/action",
+        url="http://127.0.0.1:5001/action",
         json=body
     )
 

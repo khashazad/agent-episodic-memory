@@ -1,2 +1,4 @@
 /ENV
+.env
 config.json
+.venv
