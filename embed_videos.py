@@ -1,12 +1,12 @@
+#!/usr/bin/env python3
+
 import sys
 from pathlib import Path
-
 import argparse
 import cv2
 import numpy as np
 import torch
 from tqdm import tqdm
-
 import torch.nn as nn
 
 class VideoRewardBase(nn.Module):
@@ -16,12 +16,13 @@ class VideoRewardBase(nn.Module):
         self.temporal_encoder = temporal_encoder
         self.reward_head = reward_head
 
-import mineclip.mineclip.base
-mineclip.mineclip.base.VideoRewardBase = VideoRewardBase
+import MineCLIP.mineclip.base
+MineCLIP.mineclip.base.VideoRewardBase = VideoRewardBase
 
-from mineclip.mineclip import MineCLIP
+from MineCLIP.mineclip import MineCLIP
 
 def load_model(checkpoint_path: str, device: torch.device) -> MineCLIP:
+    """Load MineCLIP model from checkpoint."""
     model = MineCLIP(
         arch="vit_base_p16_fz.v2.t2",
         resolution=(160, 256),
@@ -36,14 +37,35 @@ def load_model(checkpoint_path: str, device: torch.device) -> MineCLIP:
     return model
 
 
-def read_video_frames(video_path: str) -> np.ndarray:
-    cap = cv2.VideoCapture(video_path)
+def load_frames(chunk_dir: Path) -> np.ndarray:
+    # Load from pre-saved frames.npy
+    frames_path = chunk_dir / "frames.npy"
+    if frames_path.exists():
+        return np.load(frames_path)
+
+    # Fallback to loading from MP4 or individual frames
+    mp4_path = chunk_dir / "chunk.mp4"
+    if mp4_path.exists():
+        return load_frames_from_video(mp4_path)
+
+    # Fallback to loading individual PNG frames
+    frames_dir = chunk_dir / "frames"
+    if frames_dir.exists():
+        return load_frames_from_images(frames_dir)
+
+    raise FileNotFoundError(f"No frame data found in {chunk_dir}")
+
+
+def load_frames_from_video(video_path: Path) -> np.ndarray:
+    cap = cv2.VideoCapture(str(video_path))
     frames = []
 
+    # loop until end of video
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        # Convert BGR to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frames.append(frame)
 
@@ -51,98 +73,154 @@ def read_video_frames(video_path: str) -> np.ndarray:
     return np.array(frames)
 
 
+def load_frames_from_images(frames_dir: Path) -> np.ndarray:
+    """Load frames from individual PNG files."""
+    frame_paths = sorted(frames_dir.glob("frame_*.png"))
+    frames = []
+
+    for frame_path in frame_paths:
+        frame = cv2.imread(str(frame_path))
+        # Convert BGR to RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame)
+
+    return np.array(frames)
+
+
 def resize_frames(frames: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
+    """Resize frames to target resolution for MineCLIP."""
     resized = []
     for frame in frames:
         resized_frame = cv2.resize(frame, (target_size[1], target_size[0]))
         resized.append(resized_frame)
     return np.array(resized)
 
-
-def create_chunks(frames: np.ndarray, chunk_size: int = 16) -> np.ndarray:
-
-    n_frames = len(frames)
-    n_chunks = n_frames // chunk_size
-    if n_chunks == 0:
-        padding = chunk_size - n_frames
-        frames = np.concatenate([frames, np.tile(frames[-1:], (padding, 1, 1, 1))], axis=0)
-        n_chunks = 1
-
-    frames = frames[: n_chunks * chunk_size]
-    chunks = frames.reshape(n_chunks, chunk_size, *frames.shape[1:])
-    return chunks
-
-
 @torch.no_grad()
-def encode_video_chunks(
+def encode_chunk_batch(
     model: MineCLIP,
-    chunks: np.ndarray,
-    device: torch.device,
-    batch_size: int = 8,
-) -> np.ndarray:
-    # tensor -> [N, 16, C, H, W]
-    chunks_tensor = torch.from_numpy(chunks).permute(0, 1, 4, 2, 3).to(device)
-
-    embeddings = []
-    for i in range(0, len(chunks_tensor), batch_size):
-        batch = chunks_tensor[i : i + batch_size]
-        batch_embeddings = model.encode_video(batch)
-        embeddings.append(batch_embeddings.cpu().numpy())
-
-    return np.concatenate(embeddings, axis=0)
-
-
-def process_video(
-    video_path: Path,
-    model: MineCLIP,
+    chunk_frames_list: list[np.ndarray],
     device: torch.device,
     target_size: tuple[int, int] = (160, 256),
-    chunk_size: int = 16,
     batch_size: int = 8,
-) -> np.ndarray:
-    frames = read_video_frames(str(video_path))
+) -> list[np.ndarray]:
+    """Encode multiple chunks in batches for efficiency."""
+    embeddings = []
 
-    if len(frames) == 0:
-        return None
+    for i in range(0, len(chunk_frames_list), batch_size):
+        batch_chunks = chunk_frames_list[i:i + batch_size]
 
-    frames = resize_frames(frames, target_size)
+        # Resize all chunks in batch
+        batch_resized = []
+        for frames in batch_chunks:
+            frames_resized = resize_frames(frames, target_size)
+            batch_resized.append(frames_resized)
 
-    chunks = create_chunks(frames, chunk_size)
+        # Stack into batch tensor: [B, 16, H, W, C] -> [B, 16, C, H, W]
+        batch_tensor = torch.from_numpy(np.stack(batch_resized)).permute(0, 1, 4, 2, 3).to(device)
 
-    embeddings = encode_video_chunks(model, chunks, device, batch_size)
+        # Encode batch
+        batch_embeddings = model.encode_video(batch_tensor)
+        embeddings.extend(batch_embeddings.cpu().numpy())
 
     return embeddings
 
 
+def get_chunk_dirs(data_dir: Path) -> list[Path]:
+    """Get all chunk directories from the dataset."""
+    chunk_dirs = []
+
+    for episode_dir in data_dir.iterdir():
+        if episode_dir.is_dir():
+            for chunk_dir in episode_dir.iterdir():
+                if chunk_dir.is_dir() and chunk_dir.name.startswith("chunk_"):
+                    chunk_dirs.append(chunk_dir)
+
+    return sorted(chunk_dirs)
+
+def process_chunks_in_batches(chunk_dirs: list[Path], model: MineCLIP, device: torch.device,
+                             batch_size: int = 8):
+    """Process chunks in batches for better efficiency."""
+    chunks_to_process = []
+    for chunk_dir in chunk_dirs:
+        embedding_path = chunk_dir / "embedding.npy"
+        if not embedding_path.exists():
+            chunks_to_process.append(chunk_dir)
+
+    if not chunks_to_process:
+        print("All chunks already have embeddings!")
+        return
+
+    print(f"Processing {len(chunks_to_process)} chunks in batches of {batch_size}")
+
+    processed_count = 0
+    for i in tqdm(range(0, len(chunks_to_process), batch_size), desc="Processing chunk batches"):
+        batch_dirs = chunks_to_process[i:i + batch_size]
+
+        # Load frames for batch
+        batch_frames = []
+        valid_dirs = []
+
+        for chunk_dir in batch_dirs:
+            try:
+                frames = load_frames(chunk_dir)
+                batch_frames.append(frames)
+                valid_dirs.append(chunk_dir)
+            except Exception as e:
+                print(f"Error loading {chunk_dir}: {e}")
+
+        if not batch_frames:
+            continue
+
+        # Encode batch
+        try:
+            embeddings = encode_chunk_batch(model, batch_frames, device, batch_size=len(batch_frames))
+
+            # Save embeddings
+            for chunk_dir, embedding in zip(valid_dirs, embeddings):
+                embedding_path = chunk_dir / "embedding.npy"
+                np.save(embedding_path, embedding)
+                processed_count += 1
+
+        except Exception as e:
+            print(f"Error processing batch: {e}")
+
+    print(f"Successfully processed {processed_count} chunks")
+
+
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Generate embeddings for chunked dataset using MineCLIP")
     parser.add_argument(
         "--data-dir",
         type=str,
-        default=".data/MineRLTreechop-v0",
+        default="chunked_dataset",
+        help="Path to chunked dataset directory"
     )
     parser.add_argument(
         "--checkpoint",
         type=str,
         default=".ckpts/attn.pth",
+        help="Path to MineCLIP checkpoint"
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
-    )
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
         default=16,
+        help="Batch size for processing chunks"
     )
     parser.add_argument(
-        "--output-name",
-        type=str,
-        default="embedding.npy",
+        "--force-recompute",
+        action="store_true",
+        help="Recompute embeddings even if they already exist"
     )
+    parser.add_argument(
+        "--single-mode",
+        action="store_true",
+        help="Process chunks one by one instead of in batches"
+    )
+
     args = parser.parse_args()
 
+    # Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -150,26 +228,19 @@ def main():
     model = load_model(args.checkpoint, device)
     print("Model loaded successfully")
 
+    # Get all chunk directories
     data_dir = Path(args.data_dir)
-    video_paths = list(data_dir.glob("*/recording.mp4"))
-    print(f"{len(video_paths)} videos")
+    chunk_dirs = get_chunk_dirs(data_dir)
+    print(f"Found {len(chunk_dirs)} chunks to process")
 
-    for video_path in tqdm(video_paths, desc="Processing videos"):
-        output_path = video_path.parent / args.output_name
+    if not chunk_dirs:
+        print(f"No chunks found in {data_dir}")
+        return
 
-        if output_path.exists():
-            continue
-
-        embeddings = process_video(
-            video_path,
-            model,
-            device,
-            chunk_size=args.chunk_size,
-            batch_size=args.batch_size,
-        )
-
-        if embeddings is not None:
-            np.save(output_path, embeddings)
+    process_chunks_in_batches(
+        chunk_dirs, model, device,
+        batch_size=args.batch_size,
+    )
 
 if __name__ == "__main__":
     main()
