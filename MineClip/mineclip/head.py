@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from mineclip.utils import build_mlp
+from .utils import build_mlp
 
 
 class CLIPScoreHead(nn.Module):

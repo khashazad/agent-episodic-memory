@@ -11,7 +11,7 @@ from torch import nn
 
 from .pos_embed import interpolate_resize_pos_embed
 from .tokenization import tokenize_batch
-import mineclip.utils as U
+from . import utils as U
 
 
 class QuickGELU(nn.Module):

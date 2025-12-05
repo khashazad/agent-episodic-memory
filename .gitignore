@@ -2,3 +2,6 @@
 .env
 config.json
 .venv
+.data
+.ckpts
+

@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 from .transformer import make_temporal_transformer
-from mineclip.utils import build_mlp
+from .utils import build_mlp
 
 
 class TemporalPooling(nn.Module):
