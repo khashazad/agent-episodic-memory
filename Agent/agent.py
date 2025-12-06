@@ -13,9 +13,13 @@ import json
 import os
 from collections import deque
 import matplotlib.pyplot as plt
+import keyboard
 
 with open('config.json', 'r') as f:
     config = json.load(f)
+
+with open('test_setup.json', 'r') as f:
+    test_setup = json.load(f)
 
 os.environ["OPENAI_API_KEY"] = config['openai_token']
 ACTION_HISTORY = deque(maxlen=5)
@@ -28,6 +32,21 @@ MINERL_ACTION_TEMPLATE = {
     "jump": 0,
     "left": 0,
     "right": 0,
+}
+
+# Valid keyboard keys and action mapping
+VALID_KEYS = set(['w', 'a', 's', 'd', 'space', 'i', 'j', 'k', 'l', 'shift', 'esc'])
+ACTION_MAP = {
+    'w': ("forward", 1), 
+    'a': ("left", 1),
+    's': ("back", 1), 
+    'd': ("right", 1), 
+    'space': ("jump", 1), 
+    'i': ("camera", (-15, 0)),
+    'k': ("camera", (15, 0)),
+    'j': ("camera", (0, -15)),
+    'l': ("camera", (0, 15)),
+    'shift': ("attack", 1)
 }
 
 system_msg = SystemMessage(
@@ -109,36 +128,10 @@ def create_env():
     
     return resp.json()['obs']
 
-# The tool that the LLM can use
-@tool
-def step_env(action: Literal["attack", "back", "forward", "left", "right", "jump", "camera"],
-            value=1) -> str:
-    """Step the MineRL environment by taking a single action.
-
-    Actions and when to use them:
-    - "forward": walk straight ahead. Use this to move toward a tree you are facing.
-    - "back": step backward. Use this to back away from walls or trees.
-    - "left": strafe left (without turning). Use this to sidestep or circle a tree.
-    - "right": strafe right (without turning). Use this to sidestep or circle a tree.
-    - "jump": jump up. Use this to climb small blocks or jump while moving forward.
-    - "camera": rotate your view. value must be [pitch_delta, yaw_delta].
-        * pitch_delta < 0 looks up, > 0 looks down.
-        * yaw_delta < 0 turns left, > 0 turns right.
-        Use camera to look around for trees and to keep the crosshair on the trunk.
-    - "attack": swing your tool to break blocks. Use this when close to the tree trunk
-      and looking directly at it.
-
-    Strategy for collecting wood:
-    1) If you do NOT see a tree, call camera with a moderate yaw change like [0.0, 15.0]
-       or [0.0, -15.0] to turn and search.
-    2) When a tree is in view but far away, move with forward/left/right to approach it.
-    3) If you get stuck, use back or jump to reposition.
-    4) When the tree trunk is close and centered, call attack several times in a row.
-
-    - value: for discrete actions, 0 or 1; for "camera", [pitch_delta, yaw_delta].
-    The tool sends the full MineRL action dict and returns the new observation JSON.
-    """
-
+# Actually making the action request
+def submit_action(action: Literal["attack", "back", "forward", "left", "right", "jump", "camera"],
+            value=1):
+    
     # Copy default template
     action_body = MINERL_ACTION_TEMPLATE.copy()
 
@@ -155,8 +148,6 @@ def step_env(action: Literal["attack", "back", "forward", "left", "right", "jump
 
     body = {"actions": action_body}
 
-    print(body)
-
     # Send request to env server
     resp = requests.post(
         url="http://127.0.0.1:5000/action",
@@ -171,6 +162,42 @@ def step_env(action: Literal["attack", "back", "forward", "left", "right", "jump
     obs = resp['obs'] #process_image(resp['obs'])
     reward = resp['reward']
     done = resp['done']
+
+    return obs, reward, done, action_body
+
+# The tool that the LLM can use
+@tool
+def step_env(action: Literal["attack", "back", "forward", "left", "right", "jump", "camera"],
+            value=1) -> tuple[str, int, bool]:
+    """Step the MineRL environment by taking a single action.
+
+    Actions and when to use them:
+    - "forward": walk straight ahead. Use this to move toward a tree you are facing.
+    - "back": step backward. Use this to back away from walls or trees.
+    - "left": strafe left (without turning). Use this to sidestep or circle a tree.
+    - "right": strafe right (without turning). Use this to sidestep or circle a tree.
+    - "jump": jump up. Use this to climb small blocks or jump while moving forward.
+    - "camera": rotate your view. value must be [pitch_delta, yaw_delta].
+        * pitch_delta < 0 looks up, > 0 looks down.
+        * yaw_delta < 0 turns left, > 0 turns right.
+        Use camera to look around for trees.
+    - "attack": swing your tool to break blocks. Use this when close to the tree trunk
+      and looking directly at it.
+
+    Strategy for collecting wood:
+    1) If you do NOT see a tree, call camera with a moderate yaw change like [0.0, 15.0]
+       or [0.0, -15.0] to turn and search.
+    2) When a tree is in view but far away, move with forward/left/right to approach it.
+    3) If you get stuck, use back or jump to reposition.
+    4) When the tree trunk is close, call attack several times in a row.
+
+    - value: for discrete actions, 0 or 1; for "camera", [pitch_delta, yaw_delta].
+    The tool sends the full MineRL action dict and returns the new observation JSON.
+    """
+
+    obs, reward, done, action_body = submit_action(action, value)
+
+    print(action_body)
 
     ACTION_HISTORY.append({
         "action": action,
@@ -215,8 +242,8 @@ def format_user_msg(obs, context):
                         f"Extra context:\n{context}\n\n"
                         f"Previous actions\n{prev_actions}\n\n"
                         f"Goal: {goal}\n\n"
-                        "Remember: You only get reward when you damage or collect WOOD LOGS from trees. "
-                        "If there is no reward, you are not hitting wood. "
+                        "Remember: You only get reward when you collect WOOD LOGS from trees. "
+                        "If there is no reward, you might still be hitting wood. "
                         "Decide the next action and call the `step_env` tool."
                     ),
                 },
@@ -231,12 +258,15 @@ def format_user_msg(obs, context):
 
     return user_msg
 
-# Runs the loop
-def run_episode():
+# Runs the agent loop calling the tools
+def run_agent_episode():
     # Start the env
     obs = create_env()
-    show_obs(obs)
-    time.sleep(5)
+    
+    # Start rendering
+    if test_setup['render']:
+        show_obs(obs)
+        time.sleep(5)
 
     agent = setup_agent()
     done = False
@@ -258,7 +288,42 @@ def run_episode():
         if reward != 0:
             print(f'Got wood! {reward}')
 
-        show_obs(obs)
+        # Render this frame
+        if test_setup['render']:
+            show_obs(obs)
 
+# Runs the human controlled episode
+def run_human_episode():
+    # Start the env
+    obs = create_env()
+    
+    # Start rendering
+    show_obs(obs)
+    time.sleep(5)
 
-run_episode()
+    done = False
+    reward = 0
+
+    while not done:
+        keyboard_input = keyboard.read_key()
+
+        if keyboard_input in VALID_KEYS:
+            if keyboard_input == 'esc':
+                return
+            
+            action, value = ACTION_MAP[keyboard_input]
+
+            obs, reward, done, action_body = submit_action(action, value)
+
+            if reward != 0:
+                print(f'Got wood! {reward}')
+
+            show_obs(obs)
+        
+        time.sleep(0.01)
+
+# What mode to run in
+if test_setup['agent_mode']:
+    run_agent_episode()
+else:
+    run_human_episode()
