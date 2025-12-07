@@ -4,6 +4,7 @@ config.json
 
 .chroma.sqlite3
 
+chroma/
 .DS_Store
 
 # Byte-compiled / optimized / DLL files
