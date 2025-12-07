@@ -282,6 +282,7 @@ def run_agent_episode():
     agent = setup_agent()
     done = False
     reward = 0
+    wood_count = 0
 
     while not done:
         # Write the query
@@ -297,7 +298,8 @@ def run_agent_episode():
                     obs, reward, done = step_env.invoke(args)
 
         if reward != 0:
-            print(f'Got wood! {reward}')
+            wood_count += 1
+            print(f'Wood count: {wood_count}')
 
         # Render this frame
         if test_setup['render']:
