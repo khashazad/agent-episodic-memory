@@ -4,9 +4,9 @@
 #SBATCH --error=embed_videos_%j.err
 #SBATCH --time=24:00:00
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH -c 4
+#SBATCH --mem=24GB
+#SBATCH --gres=gpu:rtx_a2000:1
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=khashayar1924@gmail.com
 
