@@ -171,7 +171,7 @@ def main():
     parser.add_argument(
         "--dataset-dir",
         type=str,
-        default=".data/chunked_dataset",
+        default=".data/chunked_dataset_with_embeddings",
     )
     parser.add_argument(
         "--chroma-host",
