@@ -51,6 +51,14 @@ def do_action():
     
     return jsonify({'obs': obs_to_b64(obs), 'reward': reward, 'done': done})
 
+# This resets the environments
+@app.route('/reset', methods=["POST"])
+def reset_env():
+    global env
+    obs = env.reset()
+
+    return jsonify({'obs': obs_to_b64(obs)})
+
 # Start the server
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
