@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: minecraft-chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/chroma/chroma  # Persist ChromaDB data
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - ALLOW_RESET=TRUE
+    networks:
+      - agent-network
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+  minerl-env:
+    platform: linux/amd64
+    image: strangeman44/minerl-env-server:latest
+    container_name: minecraft-env
+    ports:
+      - "5001:5000"
+    environment:
+      - DISPLAY=:99
+    networks:
+      - agent-network
+    # depends_on:
+      # chromadb:
+        # condition: service_healthy
+
+networks:
+  agent-network:
+    driver: bridge
+    name: minecraft-agent-network
+
+volumes:
+  chroma-data:
+    driver: local
