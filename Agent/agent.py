@@ -14,6 +14,8 @@ import os
 from collections import deque
 import matplotlib.pyplot as plt
 import keyboard
+from datetime import datetime, timezone
+from RAG_server import RAG
 
 try:
     with open('config.json', 'r') as f:
@@ -34,6 +36,7 @@ with open('test_setup.json', 'r') as f:
     test_setup = json.load(f)
 
 ACTION_HISTORY = deque(maxlen=5)
+FRAME_HISTORY = deque(maxlen=16)
 
 MINERL_ACTION_TEMPLATE = {
     "attack": 0,
@@ -60,6 +63,9 @@ ACTION_MAP = {
     'shift': ("attack", 1)
 }
 
+# Setting the rag system
+rag = RAG()
+
 system_msg = SystemMessage(
     content=(
         "You are a Minecraft playing agent in a 3D world.\n"
@@ -79,6 +85,18 @@ system_msg = SystemMessage(
 )
 
 container_id = None
+
+# Saves the progress
+def log_result(wood):
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "wood_collected": wood
+    }
+
+    path = '/Agent/Results/' + test_setup['embedding_method'] + '.jsonl'
+
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 # Convert to image from base64
 def process_image(obs_b64):
@@ -137,6 +155,15 @@ def create_env():
 
     #obs = process_image(resp.json()['obs'])
 
+    return resp.json()['obs']
+
+# Resets the environment for different runs
+def reset_env():
+    resp = requests.post(url='http://127.0.0.1:5001/reset')
+
+    if resp.status_code != 200:
+        raise RuntimeError(f'Status code error: {resp.status_code}')
+    
     return resp.json()['obs']
 
 # Actually making the action request
@@ -240,37 +267,79 @@ def format_rev_actions():
 
     return context
 
-def format_user_msg(obs, context):
+def format_user_msg(obs, context, memory_str: str | None = None):
     prev_actions = format_rev_actions()
     goal = 'Collect as much wood as possible. To do this go up to a tree and chop it.'
 
+    memory_block = memory_str or "No relevant episodic memory was retrieved for this state."
+
     user_msg = HumanMessage(
-            content=[
-                {
-                    "type": "text",
-                    "text": (
-                        "You see the current Minecraft frame below.\n\n"
-                        f"Extra context:\n{context}\n\n"
-                        f"Previous actions\n{prev_actions}\n\n"
-                        f"Goal: {goal}\n\n"
-                        "Remember: You only get reward when you collect WOOD LOGS from trees. "
-                        "If there is no reward, you might still be hitting wood. "
-                        "Decide the next action and call the `step_env` tool."
-                    ),
+        content=[
+            {
+                "type": "text",
+                "text": (
+                    "You see the current Minecraft frame below.\n\n"
+                    f"Extra context:\n{context}\n\n"
+                    f"Previous actions:\n{prev_actions}\n\n"
+                    f"Episodic memory (similar past situation):\n{memory_block}\n\n"
+                    f"Goal: {goal}\n\n"
+                    "Remember: You only get reward when you collect WOOD LOGS from trees. "
+                    "If there is no reward, you might still be hitting wood. "
+                    "Decide the next action and call the `step_env` tool."
+                ),
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{obs}"
                 },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{obs}"
-                    },
-                },
-            ]
-        )
+            },
+        ]
+    )
 
     return user_msg
 
 # Runs the agent loop calling the tools
-def run_agent_episode():
+def run_agent_episode(agent, obs):
+
+    # Querying the memory
+    memory_str = "No episodic memory yet (not enough frames)."
+    if len(FRAME_HISTORY) == 16:
+        rag.get_action(FRAME_HISTORY)
+
+    # Write the query
+    context = ""
+
+    user_msg = format_user_msg(obs, context, memory_str=memory_str)
+    ai_msg = agent.invoke([system_msg, user_msg])
+
+    if ai_msg.tool_calls:
+        for tool_call in ai_msg.tool_calls:
+            if tool_call["name"] == "step_env":
+                args = tool_call["args"]
+                obs, reward, done = step_env.invoke(args)
+
+    FRAME_HISTORY.append(obs)
+
+    return obs, reward, done
+
+# Runs the human controlled episode
+def run_human_episode():
+    keyboard_input = keyboard.read_key()
+
+    if keyboard_input in VALID_KEYS:
+        if keyboard_input == 'esc':
+            return
+        
+        action, value = ACTION_MAP[keyboard_input]
+
+        obs, reward, done, action_body = submit_action(action, value)
+    
+        time.sleep(0.01)
+
+    return obs, reward, done
+
+def run_agent():
     # Start the env
     obs = create_env()
     
@@ -279,64 +348,35 @@ def run_agent_episode():
         show_obs(obs)
         time.sleep(5)
 
-    agent = setup_agent()
+    if test_setup['agent_mode']:
+        agent = setup_agent()
+
     done = False
     reward = 0
     wood_count = 0
 
-    while not done:
-        # Write the query
-        context = ""
-
-        user_msg = format_user_msg(obs, context)
-        ai_msg = agent.invoke([system_msg, user_msg])
-
-        if ai_msg.tool_calls:
-            for tool_call in ai_msg.tool_calls:
-                if tool_call["name"] == "step_env":
-                    args = tool_call["args"]
-                    obs, reward, done = step_env.invoke(args)
-
-        if reward != 0:
-            wood_count += 1
-            print(f'Wood count: {wood_count}')
-
-        # Render this frame
-        if test_setup['render']:
-            show_obs(obs)
-
-# Runs the human controlled episode
-def run_human_episode():
-    # Start the env
-    obs = create_env()
-    
-    # Start rendering
-    show_obs(obs)
-    time.sleep(5)
-
-    done = False
-    reward = 0
-
-    while not done:
-        keyboard_input = keyboard.read_key()
-
-        if keyboard_input in VALID_KEYS:
-            if keyboard_input == 'esc':
-                return
-            
-            action, value = ACTION_MAP[keyboard_input]
-
-            obs, reward, done, action_body = submit_action(action, value)
+    for _ in range(test_setup['test_runs']):
+        while not done:
+            # What mode to run in
+            if test_setup['agent_mode']:
+                obs, reward, done = run_agent_episode(agent, obs)
+            else:
+                obs, reward, done = run_human_episode()
 
             if reward != 0:
-                print(f'Got wood! {reward}')
+                wood_count += 1
+                print(f'Wood count: {wood_count}')
 
-            show_obs(obs)
-        
-        time.sleep(0.01)
+            # Render this frame
+            if test_setup['render']:
+                show_obs(obs)
 
-# What mode to run in
-if test_setup['agent_mode']:
-    run_agent_episode()
-else:
-    run_human_episode()
+        # Saving the results of that run
+        log_result(wood_count)
+
+        # Resetting the env and tracking
+        wood_count = 0
+        obs = reset_env()
+
+
+run_agent()

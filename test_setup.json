@@ -1,4 +1,6 @@
 {
-    "agent_mode" : false,
-    "render": true
+    "agent_mode" : true,
+    "render": true,
+    "test_runs": 1,
+    "embedding_method": "mineclip-v1"
 }
