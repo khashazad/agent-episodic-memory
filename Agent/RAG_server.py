@@ -9,6 +9,7 @@ from mineclip.mineclip import MineCLIP
 import numpy as np
 import cv2
 import base64
+import re
 
 class RAG():
     def __init__(self, target_size: tuple[int, int] = (160, 256)):
@@ -16,6 +17,17 @@ class RAG():
         self.db = self._init_database()
         self.embedding_model = self._load_embedding_model()
         self.target_size = target_size
+        self.action_template = {
+            "attack": 0,
+            "back": 0,
+            "forward": 0,
+            "jump": 0,
+            "left": 0,
+            "right": 0,
+            "camera": [0.0, 0.0],
+        }
+
+        self.camera_re = re.compile(r"camera\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)")
         
     # Initilizing the database
     def _init_database(self) -> ChromaClient:
@@ -98,24 +110,70 @@ class RAG():
         embedding = torch_embedding.cpu().detach().numpy()
 
         return embedding[0]
+
+    # Gets the action sequence
+    def parse_action_line(self, line: str) -> dict:
+        line = line.strip()
+
+        # Start with a fresh copy of the action template
+        action = self.action_template.copy()
+        action["camera"] = action["camera"].copy()
+
+        # Check for camera(...) first
+        cam = self.camera_re.search(line)
+        if cam:
+            pitch = float(cam.group(1))
+            yaw = float(cam.group(2))
+            action["camera"] = [pitch, yaw]
+            # Remove from line so only discrete actions remain
+            line = self.camera_re.sub("", line)
+
+        # Extract discrete actions: split on '+', strip whitespace
+        parts = [p.strip() for p in line.split("+") if p.strip()]
+
+        for p in parts:
+            if p in action:
+                # Ignore camera because handled above
+                if p == "camera":
+                    continue
+                action[p] = 1
+
+        return action
     
-    # def summarize_memory_chunk(memory_hit) -> str:
-    #     actions = memory_hit["actions"]
-    #     rewards = memory_hit["rewards"]
-    #     total_reward = memory_hit.get("total_reward", sum(rewards))
+    # Returns the action sequence
+    def _get_returned_action(self, chosen_action_sequence):
+        # TODO fix for reranking
+        action_list = chosen_action_sequence.strip().split("\n")
+        last_action = action_list[-1]
+        
+        # Dict representation
+        action_dict = self.parse_action_line(last_action)
 
-    #     act_str = "; ".join(
-    #         f"{i+1}. {a['action']} (value={a['value']})"
-    #         for i, a in enumerate(actions)
-    #     )
+        return action_dict
+    
+    # Turns the memory chunk into context
+    def _summarize_memory_chunk(self, action: dict) -> str:
+        # Build a readable description from the action dict
+        parts = []
 
-    #     return (
-    #         "Similar past situation from episodic memory:\n"
-    #         f"- Total reward in that 16-step sequence: {total_reward}\n"
-    #         f"- Actions that were taken in order:\n"
-    #         f"  {act_str}\n"
-    #         "You may use a similar strategy here if it seems appropriate.\n"
-    #     )
+        for key in ["forward", "back", "left", "right", "jump", "attack"]:
+            if action.get(key, 0):
+                parts.append(key)
+
+        cam = action.get("camera", [0.0, 0.0])
+        if cam != [0.0, 0.0]:
+            parts.append(f"camera({cam[0]}, {cam[1]})")
+
+        if not parts:
+            parts.append("idle")
+
+        act_str = " + ".join(parts)
+
+        return (
+            "Similar past situation from episodic memory:\n"
+            f"- Last action taken in that sequence: {act_str}\n"
+            "You may use a similar strategy here if it seems appropriate.\n"
+        )
 
     # Takes in the raw b64 frames and returns an action
     # TODO add a reranking system here
@@ -125,8 +183,11 @@ class RAG():
 
         # TODO only returning the top result rn
         similar_actions = self.db.find_similar_actions(embedding, n_results=1)
-        print(similar_actions)
 
         chosen_action_sequence = similar_actions[0]['document']
 
-        print(chosen_action_sequence)
+        chosen_action_dict = self._get_returned_action(chosen_action_sequence)
+
+        memory_chunk = self._summarize_memory_chunk(chosen_action_dict)
+
+        return memory_chunk

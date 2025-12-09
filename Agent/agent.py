@@ -39,6 +39,9 @@ with open('test_setup.json', 'r') as f:
 ACTION_HISTORY = deque(maxlen=5)
 FRAME_HISTORY = deque(maxlen=16)
 
+CAMERA_STATE = {"pitch": 0.0, "yaw": 0.0}
+PITCH_MIN, PITCH_MAX = -60.0, 60.0
+
 MINERL_ACTION_TEMPLATE = {
     "attack": 0,
     "back": 0,
@@ -89,25 +92,18 @@ system_msg = SystemMessage(
         "\n"
         "Tool usage:\n"
         "- On each turn, you MUST respond ONLY by calling the `step_env` tool.\n"
-        "- The tool takes two parallel lists: `actions` and `values`.\n"
-        "  * `actions` is a list of strings, each one of:\n"
-        "      \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\".\n"
-        "  * `values` is a list of the same length:\n"
-        "      - For movement and attack, use 0 or 1.\n"
-        "      - For \"camera\", use [pitch_delta, yaw_delta].\n"
-        "        pitch_delta < 0 looks up,  > 0 looks down.\n"
-        "        yaw_delta   < 0 turns left, > 0 turns right.\n"
+        "- The tool takes a single argument: a dict named `action`.\n"
+        "  * Each key is one of: \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\".\n"
+        "  * For movement and attack keys, use 0 or 1.\n"
+        "  * For \"camera\", use [pitch_delta, yaw_delta].\n"
+        "    - pitch_delta < 0 looks up,  > 0 looks down.\n"
+        "    - yaw_delta   < 0 turns left, > 0 turns right.\n"
         "\n"
         "Examples of valid tool calls (conceptual):\n"
         "- Turn right and move forward:\n"
-        "  actions = [\"camera\", \"forward\"], values = [[0.0, 15.0], 1]\n"
+        "  step_env(action={\"camera\": [0.0, 15.0], \"forward\": 1})\n"
         "- Jump forward while attacking:\n"
-        "  actions = [\"forward\", \"jump\", \"attack\"], values = [1, 1, 1]\n"
-        "\n"
-        "Planning guidance:\n"
-        "- Each turn, choose a small, meaningful combined action (a few entries in\n"
-        "  `actions` and `values`) that moves you closer to finding or chopping a tree.\n"
-        "- Do not output explanations, text, or anything other than a `step_env` tool call."
+        "  step_env(action={\"forward\": 1, \"jump\": 1, \"attack\": 1})\n"
     )
 )
 
@@ -195,26 +191,33 @@ def reset_env():
 
 # Submits the actions to the server
 def submit_action(
-    actions: list[Literal["attack", "back", "forward", "left", "right", "jump", "camera"]],
-    values: list[Union[int, float, list[float]]],
+    action_dict: dict,
 ):
-    if len(actions) != len(values):
-        raise ValueError("actions and values must have the same length")
-    
+    # Build the full MineRL action template
     action_body = MINERL_ACTION_TEMPLATE.copy()
 
-    for i, action in enumerate(actions):
-        value = values[i]
+    global CAMERA_STATE
 
+    for action, value in action_dict.items():
         if action == "camera":
-            # camera: value must be [pitch_delta, yaw_delta]
             if not isinstance(value, (list, tuple)) or len(value) != 2:
                 raise ValueError("Camera action requires value=[pitch_delta, yaw_delta]")
-            action_body["camera"] = [float(value[0]), float(value[1])]
+
+            pitch_delta, yaw_delta = float(value[0]), float(value[1])
+
+            # Update our estimate
+            new_pitch = CAMERA_STATE["pitch"] + pitch_delta
+            new_pitch = max(min(new_pitch, PITCH_MAX), PITCH_MIN)
+            CAMERA_STATE["pitch"] = new_pitch
+            CAMERA_STATE["yaw"] += yaw_delta
+
+            # Use the (possibly clamped) delta actually sent to env
+            # Here we recompute delta so we never exceed bounds
+            actual_pitch_delta = new_pitch - (CAMERA_STATE["pitch"] - pitch_delta)
+            action_body["camera"] = [actual_pitch_delta, yaw_delta]
         else:
             if action not in action_body:
                 raise ValueError(f"Unknown action name: {action}")
-            # cast to int for MineRL discrete actions
             action_body[action] = int(value)
 
     body = {"actions": action_body}
@@ -237,56 +240,40 @@ def submit_action(
 # The tool that the LLM can use
 @tool
 def step_env(
-    actions: List[Literal["attack", "back", "forward", "left", "right", "jump", "camera"]],
-    values: List[Union[int, float, List[float]]],
+    action: dict,     # SINGLE DICT ONLY
 ) -> dict:
-    """Step the MineRL environment by taking a *combined* action in a single env step.
+    """Step the MineRL environment by executing a *combined action* in a single environment step.
 
-    You can press multiple "buttons" at once by providing parallel `actions` and `values`
-    lists. Both lists MUST have the same length, and `values[i]` is the value for
-    `actions[i]`.
+    This tool takes **one argument only**: a dictionary called `action`.
 
-    Schema:
-    - actions: list of strings, each one of:
-        "forward", "back", "left", "right", "jump", "attack", "camera"
-    - values: list of values, same length as `actions`
-        * For discrete actions ("forward", "back", "left", "right", "jump", "attack"):
-            - Use 1 to press/hold the button, or 0 to not press it.
-        * For "camera":
-            - Use [pitch_delta, yaw_delta] where:
-                pitch_delta < 0 looks up,  > 0 looks down
-                yaw_delta   < 0 turns left, > 0 turns right
+    The `action` dictionary specifies which controls to activate during this step.
+    Each key is the name of a control, and each value specifies how that control
+    should be applied.
 
-    Example calls:
-    - Look right and walk forward:
-        {
-        "actions": ["camera", "forward"],
-        "values": [[0.0, 15.0], 1]
-        }
+    Valid action keys:
+        - "forward", "back", "left", "right", "jump", "attack"
+            → Use 1 to press the control, or 0 to leave it inactive.
+        - "camera"
+            → Use a two-element list: [pitch_delta, yaw_delta]
+            * pitch_delta < 0 looks up;  > 0 looks down
+            * yaw_delta   < 0 looks left; > 0 looks right
 
-    - Jump forward while attacking:
-        {
-        "actions": ["forward", "jump", "attack"],
-        "values": [1, 1, 1]
-        }
+    Examples:
+        step_env(action={"forward": 1})
+        step_env(action={"jump": 1, "attack": 1})
+        step_env(action={"camera": [0.0, 15.0]})
+        step_env(action={"forward": 1, "camera": [0.0, 15.0]})
 
-    Behavior:
-    - All requested actions are merged into a single MineRL action dict and sent once
-    to the `/action` endpoint.
-    - If the same discrete action appears multiple times, the last value in the list
-    is used.
-    - Multiple camera entries are combined by summing all pitch/yaw deltas.
+    All specified controls are applied simultaneously within a single MineRL step.
+    Do not include multiple entries for the same key—use only one unified dict.
+    """
 
-    Use this tool to choose small, meaningful combined actions each turn rather than
-    issuing only a single primitive action."""
+    obs, reward, done, action_body = submit_action(action)
 
-    obs, reward, done, action_body = submit_action(actions, values)
-
-    print(actions)
+    print(action)
 
     ACTION_HISTORY.append({
-        "action": actions,
-        "value": values,
+        "action": action,
         "action_body": action_body,
         "reward": reward,
     })
@@ -309,7 +296,7 @@ def setup_agent():
 def format_rev_actions():
     if ACTION_HISTORY:
         history_lines = [
-            f"{i+1}. action={entry['action']}, value={entry['value']}, reward={entry['reward']}"
+            f"{i+1}. action={entry['action']}, reward={entry['reward']}"
             for i, entry in enumerate(list(ACTION_HISTORY))
         ]
         context = "Last actions taken:\n" + "\n".join(history_lines)
@@ -324,6 +311,13 @@ def format_user_msg(obs, context, memory_str: str | None = None):
 
     memory_block = memory_str or "No relevant episodic memory was retrieved for this state."
 
+    camera_info = (
+        f"Estimated camera pitch: {CAMERA_STATE['pitch']:.1f} degrees "
+        "(0 ≈ looking at the horizon; positive = down, negative = up).\n"
+        "Try to keep pitch between about -20 and +20 degrees unless you are "
+        "deliberately looking up or down briefly.\n"
+    )
+
     user_msg = HumanMessage(
         content=[
             {
@@ -331,6 +325,7 @@ def format_user_msg(obs, context, memory_str: str | None = None):
                 "text": (
                     "You see the current Minecraft frame below.\n\n"
                     f"Extra context:\n{context}\n\n"
+                    f"Camera state:\n{camera_info}\n"
                     f"Previous actions:\n{prev_actions}\n\n"
                     f"Episodic memory (similar past situation):\n{memory_block}\n\n"
                     f"Goal: {goal}\n\n"
@@ -356,7 +351,7 @@ def run_agent_episode(agent, obs):
     # Querying the memory
     memory_str = "No episodic memory yet (not enough frames)."
     if len(FRAME_HISTORY) == 16:
-        rag.get_action(FRAME_HISTORY)
+        memory_str = rag.get_action(FRAME_HISTORY)
 
     # Write the query
     context = ""
@@ -367,7 +362,12 @@ def run_agent_episode(agent, obs):
     if ai_msg.tool_calls:
         for tool_call in ai_msg.tool_calls:
             if tool_call["name"] == "step_env":
-                result = step_env.invoke(tool_call["args"])
+                raw_args = tool_call["args"]
+
+                if "action" not in raw_args:
+                    raw_args = {"action": raw_args}
+
+                result = step_env.invoke(raw_args)
                 obs = result["obs"]
                 reward = result["reward"]
                 done = result["done"]
@@ -386,7 +386,7 @@ def run_human_episode():
         
         action, value = ACTION_MAP[keyboard_input]
 
-        obs, reward, done, action_body = submit_action([action], [value])
+        obs, reward, done, action_body = submit_action({action: value})
     
         time.sleep(0.01)
 
