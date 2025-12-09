@@ -84,14 +84,20 @@ class RAG():
 
         frames_resized = self._resize_frames(frames, self.target_size)
 
-        # Change the tensor shape: [16, H, W, C] -> [16, C, H, W]
-        frames_tensor = torch.from_numpy(frames_resized).permute(0, 3, 1, 2).to(self.device)
+        # [16, H, W, C] -> [1, 16, C, H, W]
+        frames_tensor = (
+            torch.from_numpy(frames_resized)
+            .permute(0, 3, 1, 2)      # [16, 3, 160, 256]
+            .unsqueeze(0)             # [1, 16, 3, 160, 256]
+            .float()
+            .to(self.device)
+        )
 
         # Encode batch
         torch_embedding = self.embedding_model.encode_video(frames_tensor)
-        embedding = torch_embedding.cpu().numpy()
+        embedding = torch_embedding.cpu().detach().numpy()
 
-        return embedding
+        return embedding[0]
     
     # def summarize_memory_chunk(memory_hit) -> str:
     #     actions = memory_hit["actions"]
@@ -119,6 +125,7 @@ class RAG():
 
         # TODO only returning the top result rn
         similar_actions = self.db.find_similar_actions(embedding, n_results=1)
+        print(similar_actions)
 
         chosen_action_sequence = similar_actions[0]['document']
 
