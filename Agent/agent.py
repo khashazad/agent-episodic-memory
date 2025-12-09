@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import keyboard
 from datetime import datetime, timezone
 from RAG_server import RAG
+from typing import Literal, Union, List
 
 try:
     with open('config.json', 'r') as f:
@@ -68,19 +69,45 @@ rag = RAG()
 
 system_msg = SystemMessage(
     content=(
-        "You are a Minecraft playing agent in a 3D world.\n"
-        "- You can move with: forward, back, left, right, jump.\n"
-        "- You can look around with: camera (pitch, yaw).\n"
-        "- You can break blocks (like tree trunks) with: attack.\n\n"
+        "You are a Minecraft-playing agent in a 3D world.\n"
+        "\n"
+        "Available controls:\n"
+        "- Movement: forward, back, left, right, jump\n"
+        "- Camera: camera (pitch, yaw)\n"
+        "- Breaking blocks: attack\n"
+        "\n"
         "Your goal is to collect as much wood as possible. To do this, you must:\n"
         "1) Use camera to look around until you can see a tree.\n"
         "2) Use forward/left/right/back/jump to walk up to the tree.\n"
-        "3) When close enough and looking at the trunk, use attack repeatedly.\n\n"
-        "Very important:\n"
+        "3) When close enough and looking at the trunk, use attack repeatedly.\n"
+        "\n"
+        "Very important behavior guidelines:\n"
         "- Do NOT only use forward and attack. Use camera to turn and explore.\n"
         "- Use left/right/back/jump to navigate around obstacles or adjust position.\n"
         "- Prefer using camera at the start of an episode or when you see no tree.\n"
-        "On each turn, you MUST respond ONLY by calling the `step_env` tool."
+        "- If you seem stuck (no progress, no reward), adjust camera and position.\n"
+        "\n"
+        "Tool usage:\n"
+        "- On each turn, you MUST respond ONLY by calling the `step_env` tool.\n"
+        "- The tool takes two parallel lists: `actions` and `values`.\n"
+        "  * `actions` is a list of strings, each one of:\n"
+        "      \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\".\n"
+        "  * `values` is a list of the same length:\n"
+        "      - For movement and attack, use 0 or 1.\n"
+        "      - For \"camera\", use [pitch_delta, yaw_delta].\n"
+        "        pitch_delta < 0 looks up,  > 0 looks down.\n"
+        "        yaw_delta   < 0 turns left, > 0 turns right.\n"
+        "\n"
+        "Examples of valid tool calls (conceptual):\n"
+        "- Turn right and move forward:\n"
+        "  actions = [\"camera\", \"forward\"], values = [[0.0, 15.0], 1]\n"
+        "- Jump forward while attacking:\n"
+        "  actions = [\"forward\", \"jump\", \"attack\"], values = [1, 1, 1]\n"
+        "\n"
+        "Planning guidance:\n"
+        "- Each turn, choose a small, meaningful combined action (a few entries in\n"
+        "  `actions` and `values`) that moves you closer to finding or chopping a tree.\n"
+        "- Do not output explanations, text, or anything other than a `step_env` tool call."
     )
 )
 
@@ -166,85 +193,109 @@ def reset_env():
     
     return resp.json()['obs']
 
-# Actually making the action request
-def submit_action(action: Literal["attack", "back", "forward", "left", "right", "jump", "camera"],
-            value=1):
+# Submits the actions to the server
+def submit_action(
+    actions: list[Literal["attack", "back", "forward", "left", "right", "jump", "camera"]],
+    values: list[Union[int, float, list[float]]],
+):
+    if len(actions) != len(values):
+        raise ValueError("actions and values must have the same length")
     
-    # Copy default template
     action_body = MINERL_ACTION_TEMPLATE.copy()
 
-    # Handle special case for camera movement
-    if action == "camera":
-        if not isinstance(value, (list, tuple)) or len(value) != 2:
-            raise ValueError("Camera action requires value=[pitch_delta, yaw_delta]")
-        action_body["camera"] = value
-    else:
-        # Normal discrete MineRL action
-        if action not in action_body:
-            raise ValueError(f"Unknown action name: {action}")
-        action_body[action] = value
+    for i, action in enumerate(actions):
+        value = values[i]
+
+        if action == "camera":
+            # camera: value must be [pitch_delta, yaw_delta]
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                raise ValueError("Camera action requires value=[pitch_delta, yaw_delta]")
+            action_body["camera"] = [float(value[0]), float(value[1])]
+        else:
+            if action not in action_body:
+                raise ValueError(f"Unknown action name: {action}")
+            # cast to int for MineRL discrete actions
+            action_body[action] = int(value)
 
     body = {"actions": action_body}
 
-    # Send request to env server
     resp = requests.post(
         url="http://127.0.0.1:5001/action",
-        json=body
+        json=body,
     )
 
     if resp.status_code != 200:
-        raise RuntimeError(f'Status code error: {resp.status_code}')
+        raise RuntimeError(f"Status code error: {resp.status_code}")
 
-    # Extracting the information
-    resp = resp.json()
-    obs = resp['obs'] #process_image(resp['obs'])
-    reward = resp['reward']
-    done = resp['done']
+    data = resp.json()
+    obs = data["obs"]
+    reward = data["reward"]
+    done = data["done"]
 
     return obs, reward, done, action_body
 
 # The tool that the LLM can use
 @tool
-def step_env(action: Literal["attack", "back", "forward", "left", "right", "jump", "camera"],
-            value=1) -> tuple[str, int, bool]:
-    """Step the MineRL environment by taking a single action.
+def step_env(
+    actions: List[Literal["attack", "back", "forward", "left", "right", "jump", "camera"]],
+    values: List[Union[int, float, List[float]]],
+) -> dict:
+    """Step the MineRL environment by taking a *combined* action in a single env step.
 
-    Actions and when to use them:
-    - "forward": walk straight ahead. Use this to move toward a tree you are facing.
-    - "back": step backward. Use this to back away from walls or trees.
-    - "left": strafe left (without turning). Use this to sidestep or circle a tree.
-    - "right": strafe right (without turning). Use this to sidestep or circle a tree.
-    - "jump": jump up. Use this to climb small blocks or jump while moving forward.
-    - "camera": rotate your view. value must be [pitch_delta, yaw_delta].
-        * pitch_delta < 0 looks up, > 0 looks down.
-        * yaw_delta < 0 turns left, > 0 turns right.
-        Use camera to look around for trees.
-    - "attack": swing your tool to break blocks. Use this when close to the tree trunk
-      and looking directly at it.
+    You can press multiple "buttons" at once by providing parallel `actions` and `values`
+    lists. Both lists MUST have the same length, and `values[i]` is the value for
+    `actions[i]`.
 
-    Strategy for collecting wood:
-    1) If you do NOT see a tree, call camera with a moderate yaw change like [0.0, 15.0]
-       or [0.0, -15.0] to turn and search.
-    2) When a tree is in view but far away, move with forward/left/right to approach it.
-    3) If you get stuck, use back or jump to reposition.
-    4) When the tree trunk is close, call attack several times in a row.
+    Schema:
+    - actions: list of strings, each one of:
+        "forward", "back", "left", "right", "jump", "attack", "camera"
+    - values: list of values, same length as `actions`
+        * For discrete actions ("forward", "back", "left", "right", "jump", "attack"):
+            - Use 1 to press/hold the button, or 0 to not press it.
+        * For "camera":
+            - Use [pitch_delta, yaw_delta] where:
+                pitch_delta < 0 looks up,  > 0 looks down
+                yaw_delta   < 0 turns left, > 0 turns right
 
-    - value: for discrete actions, 0 or 1; for "camera", [pitch_delta, yaw_delta].
-    The tool sends the full MineRL action dict and returns the new observation JSON.
-    """
+    Example calls:
+    - Look right and walk forward:
+        {
+        "actions": ["camera", "forward"],
+        "values": [[0.0, 15.0], 1]
+        }
 
-    obs, reward, done, action_body = submit_action(action, value)
+    - Jump forward while attacking:
+        {
+        "actions": ["forward", "jump", "attack"],
+        "values": [1, 1, 1]
+        }
 
-    print(action_body)
+    Behavior:
+    - All requested actions are merged into a single MineRL action dict and sent once
+    to the `/action` endpoint.
+    - If the same discrete action appears multiple times, the last value in the list
+    is used.
+    - Multiple camera entries are combined by summing all pitch/yaw deltas.
+
+    Use this tool to choose small, meaningful combined actions each turn rather than
+    issuing only a single primitive action."""
+
+    obs, reward, done, action_body = submit_action(actions, values)
+
+    print(actions)
 
     ACTION_HISTORY.append({
-        "action": action,
-        "value": value,
+        "action": actions,
+        "value": values,
         "action_body": action_body,
-        "reward": reward
+        "reward": reward,
     })
 
-    return obs, reward, done
+    return {
+        "obs": obs,
+        "reward": reward,
+        "done": done,
+    }
 
 # This will init the agent and return the tool caller
 def setup_agent():
@@ -316,8 +367,10 @@ def run_agent_episode(agent, obs):
     if ai_msg.tool_calls:
         for tool_call in ai_msg.tool_calls:
             if tool_call["name"] == "step_env":
-                args = tool_call["args"]
-                obs, reward, done = step_env.invoke(args)
+                result = step_env.invoke(tool_call["args"])
+                obs = result["obs"]
+                reward = result["reward"]
+                done = result["done"]
 
     FRAME_HISTORY.append(obs)
 
@@ -333,7 +386,7 @@ def run_human_episode():
         
         action, value = ACTION_MAP[keyboard_input]
 
-        obs, reward, done, action_body = submit_action(action, value)
+        obs, reward, done, action_body = submit_action([action], [value])
     
         time.sleep(0.01)
 
