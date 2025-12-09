@@ -3,7 +3,7 @@
 #SBATCH --output=gen_descriptions_%j.out
 #SBATCH --error=gen_descriptions_%j.err
 #SBATCH --time=24:00:00
-#SBATCH --partition=gpu
+#SBATCH --partition=gpunodes
 #SBATCH -c 4
 #SBATCH --mem=32GB
 #SBATCH --gres=gpu:rtx_a2000:1
