@@ -8,7 +8,6 @@ import base64
 from PIL import Image
 import io
 import atexit
-from typing import Literal
 import json
 import os
 from collections import deque
@@ -16,12 +15,11 @@ import matplotlib.pyplot as plt
 import keyboard
 from datetime import datetime, timezone
 from RAG_server import RAG
-from typing import Literal, Union, List
 
 try:
     with open('config.json', 'r') as f:
         config = json.load(f)
-    openai_key = config.get('openai_token')
+    openai_key = config.get('OPENAI_API_KEY')
 except Exception:
     openai_key = None
 
@@ -176,8 +174,6 @@ def create_env():
     if resp.status_code != 200:
         raise RuntimeError(f'Status code error: {resp.status_code}')
 
-    #obs = process_image(resp.json()['obs'])
-
     return resp.json()['obs']
 
 # Resets the environment for different runs
@@ -287,7 +283,10 @@ def step_env(
 # This will init the agent and return the tool caller
 def setup_agent():
     # Setting the LLM
-    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=1)
+    llm = ChatOpenAI(
+        model="gpt-5-nano-2025-08-07",
+        temperature=0.2
+    )
     llm_with_tools = llm.bind_tools([step_env])
 
     return llm_with_tools
@@ -307,7 +306,7 @@ def format_rev_actions():
 
 def format_user_msg(obs, context, memory_str: str | None = None):
     prev_actions = format_rev_actions()
-    goal = 'Collect as much wood as possible. To do this go up to a tree and chop it.'
+    goal = 'Goal: Collect as much wood as possible.'
 
     memory_block = memory_str or "No relevant episodic memory was retrieved for this state."
 
@@ -350,7 +349,7 @@ def run_agent_episode(agent, obs):
 
     # Querying the memory
     memory_str = "No episodic memory yet (not enough frames)."
-    if len(FRAME_HISTORY) == 16:
+    if test_setup['use_rag'] and len(FRAME_HISTORY) == 16:
         memory_str = rag.get_action(FRAME_HISTORY)
 
     # Write the query
@@ -393,6 +392,8 @@ def run_human_episode():
     return obs, reward, done
 
 def run_agent():
+    max_frames = 100
+
     # Start the env
     obs = create_env()
     
@@ -407,6 +408,7 @@ def run_agent():
     done = False
     reward = 0
     wood_count = 0
+    cur_frames = 0
 
     for _ in range(test_setup['test_runs']):
         while not done:
@@ -423,6 +425,12 @@ def run_agent():
             # Render this frame
             if test_setup['render']:
                 show_obs(obs)
+
+            cur_frames += 1
+
+            # the model isn't doing anything
+            if cur_frames >= max_frames and reward == 0:
+                break
 
         # Saving the results of that run
         log_result(wood_count)
