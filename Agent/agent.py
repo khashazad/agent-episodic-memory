@@ -8,17 +8,18 @@ import base64
 from PIL import Image
 import io
 import atexit
-from typing import Literal
 import json
 import os
 from collections import deque
 import matplotlib.pyplot as plt
 import keyboard
+from datetime import datetime, timezone
+from RAG_server import RAG
 
 try:
     with open('config.json', 'r') as f:
         config = json.load(f)
-    openai_key = config.get('openai_token')
+    openai_key = config.get('OPENAI_API_KEY')
 except Exception:
     openai_key = None
 
@@ -34,6 +35,10 @@ with open('test_setup.json', 'r') as f:
     test_setup = json.load(f)
 
 ACTION_HISTORY = deque(maxlen=5)
+FRAME_HISTORY = deque(maxlen=16)
+
+CAMERA_STATE = {"pitch": 0.0, "yaw": 0.0}
+PITCH_MIN, PITCH_MAX = -60.0, 60.0
 
 MINERL_ACTION_TEMPLATE = {
     "attack": 0,
@@ -60,25 +65,59 @@ ACTION_MAP = {
     'shift': ("attack", 1)
 }
 
+# Setting the rag system
+rag = RAG()
+
 system_msg = SystemMessage(
     content=(
-        "You are a Minecraft playing agent in a 3D world.\n"
-        "- You can move with: forward, back, left, right, jump.\n"
-        "- You can look around with: camera (pitch, yaw).\n"
-        "- You can break blocks (like tree trunks) with: attack.\n\n"
+        "You are a Minecraft-playing agent in a 3D world.\n"
+        "\n"
+        "Available controls:\n"
+        "- Movement: forward, back, left, right, jump\n"
+        "- Camera: camera (pitch, yaw)\n"
+        "- Breaking blocks: attack\n"
+        "\n"
         "Your goal is to collect as much wood as possible. To do this, you must:\n"
         "1) Use camera to look around until you can see a tree.\n"
         "2) Use forward/left/right/back/jump to walk up to the tree.\n"
-        "3) When close enough and looking at the trunk, use attack repeatedly.\n\n"
-        "Very important:\n"
+        "3) When close enough and looking at the trunk, use attack repeatedly.\n"
+        "\n"
+        "Very important behavior guidelines:\n"
         "- Do NOT only use forward and attack. Use camera to turn and explore.\n"
         "- Use left/right/back/jump to navigate around obstacles or adjust position.\n"
         "- Prefer using camera at the start of an episode or when you see no tree.\n"
-        "On each turn, you MUST respond ONLY by calling the `step_env` tool."
+        "- If you seem stuck (no progress, no reward), adjust camera and position.\n"
+        "\n"
+        "Tool usage:\n"
+        "- On each turn, you MUST respond ONLY by calling the `step_env` tool.\n"
+        "- The tool takes a single argument: a dict named `action`.\n"
+        "  * Each key is one of: \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\".\n"
+        "  * For movement and attack keys, use 0 or 1.\n"
+        "  * For \"camera\", use [pitch_delta, yaw_delta].\n"
+        "    - pitch_delta < 0 looks up,  > 0 looks down.\n"
+        "    - yaw_delta   < 0 turns left, > 0 turns right.\n"
+        "\n"
+        "Examples of valid tool calls (conceptual):\n"
+        "- Turn right and move forward:\n"
+        "  step_env(action={\"camera\": [0.0, 15.0], \"forward\": 1})\n"
+        "- Jump forward while attacking:\n"
+        "  step_env(action={\"forward\": 1, \"jump\": 1, \"attack\": 1})\n"
     )
 )
 
 container_id = None
+
+# Saves the progress
+def log_result(wood):
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "wood_collected": wood
+    }
+
+    path = '/Agent/Results/' + test_setup['embedding_method'] + '.jsonl'
+
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 # Convert to image from base64
 def process_image(obs_b64):
@@ -135,94 +174,119 @@ def create_env():
     if resp.status_code != 200:
         raise RuntimeError(f'Status code error: {resp.status_code}')
 
-    #obs = process_image(resp.json()['obs'])
-
     return resp.json()['obs']
 
-# Actually making the action request
-def submit_action(action: Literal["attack", "back", "forward", "left", "right", "jump", "camera"],
-            value=1):
-    
-    # Copy default template
-    action_body = MINERL_ACTION_TEMPLATE.copy()
-
-    # Handle special case for camera movement
-    if action == "camera":
-        if not isinstance(value, (list, tuple)) or len(value) != 2:
-            raise ValueError("Camera action requires value=[pitch_delta, yaw_delta]")
-        action_body["camera"] = value
-    else:
-        # Normal discrete MineRL action
-        if action not in action_body:
-            raise ValueError(f"Unknown action name: {action}")
-        action_body[action] = value
-
-    body = {"actions": action_body}
-
-    # Send request to env server
-    resp = requests.post(
-        url="http://127.0.0.1:5001/action",
-        json=body
-    )
+# Resets the environment for different runs
+def reset_env():
+    resp = requests.post(url='http://127.0.0.1:5001/reset')
 
     if resp.status_code != 200:
         raise RuntimeError(f'Status code error: {resp.status_code}')
+    
+    return resp.json()['obs']
 
-    # Extracting the information
-    resp = resp.json()
-    obs = resp['obs'] #process_image(resp['obs'])
-    reward = resp['reward']
-    done = resp['done']
+# Submits the actions to the server
+def submit_action(
+    action_dict: dict,
+):
+    # Build the full MineRL action template
+    action_body = MINERL_ACTION_TEMPLATE.copy()
+
+    global CAMERA_STATE
+
+    for action, value in action_dict.items():
+        if action == "camera":
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                raise ValueError("Camera action requires value=[pitch_delta, yaw_delta]")
+
+            pitch_delta, yaw_delta = float(value[0]), float(value[1])
+
+            # Update our estimate
+            new_pitch = CAMERA_STATE["pitch"] + pitch_delta
+            new_pitch = max(min(new_pitch, PITCH_MAX), PITCH_MIN)
+            CAMERA_STATE["pitch"] = new_pitch
+            CAMERA_STATE["yaw"] += yaw_delta
+
+            # Use the (possibly clamped) delta actually sent to env
+            # Here we recompute delta so we never exceed bounds
+            actual_pitch_delta = new_pitch - (CAMERA_STATE["pitch"] - pitch_delta)
+            action_body["camera"] = [actual_pitch_delta, yaw_delta]
+        else:
+            if action not in action_body:
+                raise ValueError(f"Unknown action name: {action}")
+            action_body[action] = int(value)
+
+    body = {"actions": action_body}
+
+    resp = requests.post(
+        url="http://127.0.0.1:5001/action",
+        json=body,
+    )
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Status code error: {resp.status_code}")
+
+    data = resp.json()
+    obs = data["obs"]
+    reward = data["reward"]
+    done = data["done"]
 
     return obs, reward, done, action_body
 
 # The tool that the LLM can use
 @tool
-def step_env(action: Literal["attack", "back", "forward", "left", "right", "jump", "camera"],
-            value=1) -> tuple[str, int, bool]:
-    """Step the MineRL environment by taking a single action.
+def step_env(
+    action: dict,     # SINGLE DICT ONLY
+) -> dict:
+    """Step the MineRL environment by executing a *combined action* in a single environment step.
 
-    Actions and when to use them:
-    - "forward": walk straight ahead. Use this to move toward a tree you are facing.
-    - "back": step backward. Use this to back away from walls or trees.
-    - "left": strafe left (without turning). Use this to sidestep or circle a tree.
-    - "right": strafe right (without turning). Use this to sidestep or circle a tree.
-    - "jump": jump up. Use this to climb small blocks or jump while moving forward.
-    - "camera": rotate your view. value must be [pitch_delta, yaw_delta].
-        * pitch_delta < 0 looks up, > 0 looks down.
-        * yaw_delta < 0 turns left, > 0 turns right.
-        Use camera to look around for trees.
-    - "attack": swing your tool to break blocks. Use this when close to the tree trunk
-      and looking directly at it.
+    This tool takes **one argument only**: a dictionary called `action`.
 
-    Strategy for collecting wood:
-    1) If you do NOT see a tree, call camera with a moderate yaw change like [0.0, 15.0]
-       or [0.0, -15.0] to turn and search.
-    2) When a tree is in view but far away, move with forward/left/right to approach it.
-    3) If you get stuck, use back or jump to reposition.
-    4) When the tree trunk is close, call attack several times in a row.
+    The `action` dictionary specifies which controls to activate during this step.
+    Each key is the name of a control, and each value specifies how that control
+    should be applied.
 
-    - value: for discrete actions, 0 or 1; for "camera", [pitch_delta, yaw_delta].
-    The tool sends the full MineRL action dict and returns the new observation JSON.
+    Valid action keys:
+        - "forward", "back", "left", "right", "jump", "attack"
+            → Use 1 to press the control, or 0 to leave it inactive.
+        - "camera"
+            → Use a two-element list: [pitch_delta, yaw_delta]
+            * pitch_delta < 0 looks up;  > 0 looks down
+            * yaw_delta   < 0 looks left; > 0 looks right
+
+    Examples:
+        step_env(action={"forward": 1})
+        step_env(action={"jump": 1, "attack": 1})
+        step_env(action={"camera": [0.0, 15.0]})
+        step_env(action={"forward": 1, "camera": [0.0, 15.0]})
+
+    All specified controls are applied simultaneously within a single MineRL step.
+    Do not include multiple entries for the same key—use only one unified dict.
     """
 
-    obs, reward, done, action_body = submit_action(action, value)
+    obs, reward, done, action_body = submit_action(action)
 
-    print(action_body)
+    print(action)
 
     ACTION_HISTORY.append({
         "action": action,
-        "value": value,
         "action_body": action_body,
-        "reward": reward
+        "reward": reward,
     })
 
-    return obs, reward, done
+    return {
+        "obs": obs,
+        "reward": reward,
+        "done": done,
+    }
 
 # This will init the agent and return the tool caller
 def setup_agent():
     # Setting the LLM
-    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=1)
+    llm = ChatOpenAI(
+        model="gpt-5-nano-2025-08-07",
+        temperature=0.2
+    )
     llm_with_tools = llm.bind_tools([step_env])
 
     return llm_with_tools
@@ -231,7 +295,7 @@ def setup_agent():
 def format_rev_actions():
     if ACTION_HISTORY:
         history_lines = [
-            f"{i+1}. action={entry['action']}, value={entry['value']}, reward={entry['reward']}"
+            f"{i+1}. action={entry['action']}, reward={entry['reward']}"
             for i, entry in enumerate(list(ACTION_HISTORY))
         ]
         context = "Last actions taken:\n" + "\n".join(history_lines)
@@ -240,37 +304,96 @@ def format_rev_actions():
 
     return context
 
-def format_user_msg(obs, context):
+def format_user_msg(obs, context, memory_str: str | None = None):
     prev_actions = format_rev_actions()
-    goal = 'Collect as much wood as possible. To do this go up to a tree and chop it.'
+    goal = 'Goal: Collect as much wood as possible.'
+
+    memory_block = memory_str or "No relevant episodic memory was retrieved for this state."
+
+    camera_info = (
+        f"Estimated camera pitch: {CAMERA_STATE['pitch']:.1f} degrees "
+        "(0 ≈ looking at the horizon; positive = down, negative = up).\n"
+        "Try to keep pitch between about -20 and +20 degrees unless you are "
+        "deliberately looking up or down briefly.\n"
+    )
 
     user_msg = HumanMessage(
-            content=[
-                {
-                    "type": "text",
-                    "text": (
-                        "You see the current Minecraft frame below.\n\n"
-                        f"Extra context:\n{context}\n\n"
-                        f"Previous actions\n{prev_actions}\n\n"
-                        f"Goal: {goal}\n\n"
-                        "Remember: You only get reward when you collect WOOD LOGS from trees. "
-                        "If there is no reward, you might still be hitting wood. "
-                        "Decide the next action and call the `step_env` tool."
-                    ),
+        content=[
+            {
+                "type": "text",
+                "text": (
+                    "You see the current Minecraft frame below.\n\n"
+                    f"Extra context:\n{context}\n\n"
+                    f"Camera state:\n{camera_info}\n"
+                    f"Previous actions:\n{prev_actions}\n\n"
+                    f"Episodic memory (similar past situation):\n{memory_block}\n\n"
+                    f"Goal: {goal}\n\n"
+                    "Remember: You only get reward when you collect WOOD LOGS from trees. "
+                    "If there is no reward, you might still be hitting wood. "
+                    "Decide the next action and call the `step_env` tool."
+                ),
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{obs}"
                 },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{obs}"
-                    },
-                },
-            ]
-        )
+            },
+        ]
+    )
 
     return user_msg
 
 # Runs the agent loop calling the tools
-def run_agent_episode():
+def run_agent_episode(agent, obs):
+
+    # Querying the memory
+    memory_str = "No episodic memory yet (not enough frames)."
+    if test_setup['use_rag'] and len(FRAME_HISTORY) == 16:
+        memory_str = rag.get_action(FRAME_HISTORY)
+
+    # Write the query
+    context = ""
+
+    user_msg = format_user_msg(obs, context, memory_str=memory_str)
+    ai_msg = agent.invoke([system_msg, user_msg])
+
+    if ai_msg.tool_calls:
+        for tool_call in ai_msg.tool_calls:
+            if tool_call["name"] == "step_env":
+                raw_args = tool_call["args"]
+
+                if "action" not in raw_args:
+                    raw_args = {"action": raw_args}
+
+                result = step_env.invoke(raw_args)
+                obs = result["obs"]
+                reward = result["reward"]
+                done = result["done"]
+
+    FRAME_HISTORY.append(obs)
+
+    return obs, reward, done
+
+# Runs the human controlled episode
+def run_human_episode():
+    keyboard_input = keyboard.read_key()
+
+    if keyboard_input in VALID_KEYS:
+        if keyboard_input == 'esc':
+            return
+        
+        action, value = ACTION_MAP[keyboard_input]
+
+        obs, reward, done, action_body = submit_action({action: value})
+    
+        time.sleep(0.01)
+
+    return obs, reward, done
+
+def run_agent():
+    max_frames = 100
+
     # Start the env
     obs = create_env()
     
@@ -279,64 +402,42 @@ def run_agent_episode():
         show_obs(obs)
         time.sleep(5)
 
-    agent = setup_agent()
+    if test_setup['agent_mode']:
+        agent = setup_agent()
+
     done = False
     reward = 0
     wood_count = 0
+    cur_frames = 0
 
-    while not done:
-        # Write the query
-        context = ""
-
-        user_msg = format_user_msg(obs, context)
-        ai_msg = agent.invoke([system_msg, user_msg])
-
-        if ai_msg.tool_calls:
-            for tool_call in ai_msg.tool_calls:
-                if tool_call["name"] == "step_env":
-                    args = tool_call["args"]
-                    obs, reward, done = step_env.invoke(args)
-
-        if reward != 0:
-            wood_count += 1
-            print(f'Wood count: {wood_count}')
-
-        # Render this frame
-        if test_setup['render']:
-            show_obs(obs)
-
-# Runs the human controlled episode
-def run_human_episode():
-    # Start the env
-    obs = create_env()
-    
-    # Start rendering
-    show_obs(obs)
-    time.sleep(5)
-
-    done = False
-    reward = 0
-
-    while not done:
-        keyboard_input = keyboard.read_key()
-
-        if keyboard_input in VALID_KEYS:
-            if keyboard_input == 'esc':
-                return
-            
-            action, value = ACTION_MAP[keyboard_input]
-
-            obs, reward, done, action_body = submit_action(action, value)
+    for _ in range(test_setup['test_runs']):
+        while not done:
+            # What mode to run in
+            if test_setup['agent_mode']:
+                obs, reward, done = run_agent_episode(agent, obs)
+            else:
+                obs, reward, done = run_human_episode()
 
             if reward != 0:
-                print(f'Got wood! {reward}')
+                wood_count += 1
+                print(f'Wood count: {wood_count}')
 
-            show_obs(obs)
-        
-        time.sleep(0.01)
+            # Render this frame
+            if test_setup['render']:
+                show_obs(obs)
 
-# What mode to run in
-if test_setup['agent_mode']:
-    run_agent_episode()
-else:
-    run_human_episode()
+            cur_frames += 1
+
+            # the model isn't doing anything
+            if cur_frames >= max_frames and reward == 0:
+                break
+
+        # Saving the results of that run
+        log_result(wood_count)
+
+        # Resetting the env and tracking
+        wood_count = 0
+        obs = reset_env()
+
+
+run_agent()
