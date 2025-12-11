@@ -34,6 +34,9 @@ os.environ["OPENAI_API_KEY"] = openai_key
 with open('test_setup.json', 'r') as f:
     test_setup = json.load(f)
 
+with open('example_images.json', 'r') as f:
+    example_images = json.load(f)
+
 ACTION_HISTORY = deque(maxlen=5)
 FRAME_HISTORY = deque(maxlen=16)
 
@@ -66,11 +69,21 @@ ACTION_MAP = {
 }
 
 # Setting the rag system
-rag = RAG()
+if test_setup['use_rag']:
+    rag = RAG()
+
+example_image_1 = "data:image/png;base64," + example_images["example_1"]
+example_image_2 = "data:image/png;base64," + example_images["example_2"]
+
+example_action_1 = {"forward": 1}
+example_action_2 = {"attack": 1}
+
+explanation_1 = "The agent saw the tree (object in white) in the distance and started moving towards it."
+explanation_2 = "The agent is now at the tree. It continuously attacks the tree until the block is gone. Once the block is broken the reward is given."
 
 system_msg = SystemMessage(
     content=(
-        "You are a Minecraft-playing agent in a 3D world.\n"
+        f"You are a Minecraft-playing agent in a 3D world.\n"
         "\n"
         "Available controls:\n"
         "- Movement: forward, back, left, right, jump\n"
@@ -86,22 +99,28 @@ system_msg = SystemMessage(
         "- Do NOT only use forward and attack. Use camera to turn and explore.\n"
         "- Use left/right/back/jump to navigate around obstacles or adjust position.\n"
         "- Prefer using camera at the start of an episode or when you see no tree.\n"
-        "- If you seem stuck (no progress, no reward), adjust camera and position.\n"
+        "- If you seem stuck, adjust camera and position.\n"
+        "- The blocks only break after attacking for a long time. If you are close enough to the tree, you must attack enough times in a row to get the reward."
+        "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK. If you attack when you're not near a tree, you will be in trouble."
         "\n"
         "Tool usage:\n"
         "- On each turn, you MUST respond ONLY by calling the `step_env` tool.\n"
         "- The tool takes a single argument: a dict named `action`.\n"
-        "  * Each key is one of: \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\".\n"
-        "  * For movement and attack keys, use 0 or 1.\n"
-        "  * For \"camera\", use [pitch_delta, yaw_delta].\n"
-        "    - pitch_delta < 0 looks up,  > 0 looks down.\n"
-        "    - yaw_delta   < 0 turns left, > 0 turns right.\n"
+        "  * Keys: \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\".\n"
+        "  * Movement/attack: 0 or 1.\n"
+        "  * Camera: [pitch_delta, yaw_delta].\n"
         "\n"
-        "Examples of valid tool calls (conceptual):\n"
-        "- Turn right and move forward:\n"
-        "  step_env(action={\"camera\": [0.0, 15.0], \"forward\": 1})\n"
-        "- Jump forward while attacking:\n"
-        "  step_env(action={\"forward\": 1, \"jump\": 1, \"attack\": 1})\n"
+        "Training examples:\n"
+        "\n"
+        "EXAMPLE 1:\n"
+        f"Input image: [{example_image_1}]\n"
+        f"Taken action: {example_action_1}\n"
+        f"The reason for the action: {explanation_1}\n"
+        "\n"
+        "EXAMPLE 2:\n"
+        f"Input image: [{example_image_2}]\n"
+        f"Taken action: {example_action_2}\n"
+        f"The reason for the action: {explanation_2}\n"
     )
 )
 
@@ -114,7 +133,7 @@ def log_result(wood):
         "wood_collected": wood
     }
 
-    path = '/Agent/Results/' + test_setup['embedding_method'] + '.jsonl'
+    path = 'Agent/Results/' + test_setup['embedding_method'] + '.jsonl'
 
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -262,6 +281,7 @@ def step_env(
 
     All specified controls are applied simultaneously within a single MineRL step.
     Do not include multiple entries for the same key—use only one unified dict.
+    You do not have to include actions in the dictonary that do not want to perform.
     """
 
     obs, reward, done, action_body = submit_action(action)
@@ -392,7 +412,7 @@ def run_human_episode():
     return obs, reward, done
 
 def run_agent():
-    max_frames = 100
+    max_frames = test_setup["max_frames"]
 
     # Start the env
     obs = create_env()
@@ -429,7 +449,7 @@ def run_agent():
             cur_frames += 1
 
             # the model isn't doing anything
-            if cur_frames >= max_frames and reward == 0:
+            if cur_frames >= max_frames:
                 break
 
         # Saving the results of that run
