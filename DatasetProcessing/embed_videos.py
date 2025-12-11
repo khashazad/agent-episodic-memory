@@ -51,7 +51,7 @@ def load_frames(window_dir: Path) -> np.ndarray:
     mp4_path = window_dir / "window.mp4"
     if mp4_path.exists():
         return load_frames_from_video(mp4_path)
-    
+
     # Fallback to chunk.mp4 (backwards compatibility)
     mp4_path = window_dir / "chunk.mp4"
     if mp4_path.exists():
@@ -201,7 +201,7 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="sliding_window_dataset",
+        default=".data/sliding_window_dataset",
         help="Path to sliding window dataset directory"
     )
     parser.add_argument(
