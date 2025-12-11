@@ -40,23 +40,29 @@ def load_model(checkpoint_path: str, device: torch.device) -> MineCLIP:
     return model
 
 
-def load_frames(chunk_dir: Path) -> np.ndarray:
+def load_frames(window_dir: Path) -> np.ndarray:
     # Load from pre-saved frames.npy
-    frames_path = chunk_dir / "frames.npy"
+    frames_path = window_dir / "frames.npy"
     if frames_path.exists():
         return np.load(frames_path)
 
     # Fallback to loading from MP4 or individual frames
-    mp4_path = chunk_dir / "chunk.mp4"
+    # Try window.mp4 first (sliding window format)
+    mp4_path = window_dir / "window.mp4"
+    if mp4_path.exists():
+        return load_frames_from_video(mp4_path)
+    
+    # Fallback to chunk.mp4 (backwards compatibility)
+    mp4_path = window_dir / "chunk.mp4"
     if mp4_path.exists():
         return load_frames_from_video(mp4_path)
 
     # Fallback to loading individual PNG frames
-    frames_dir = chunk_dir / "frames"
+    frames_dir = window_dir / "frames"
     if frames_dir.exists():
         return load_frames_from_images(frames_dir)
 
-    raise FileNotFoundError(f"No frame data found in {chunk_dir}")
+    raise FileNotFoundError(f"No frame data found in {window_dir}")
 
 
 def load_frames_from_video(video_path: Path) -> np.ndarray:
@@ -99,22 +105,22 @@ def resize_frames(frames: np.ndarray, target_size: tuple[int, int]) -> np.ndarra
     return np.array(resized)
 
 @torch.no_grad()
-def encode_chunk_batch(
+def encode_window_batch(
     model: MineCLIP,
-    chunk_frames_list: list[np.ndarray],
+    window_frames_list: list[np.ndarray],
     device: torch.device,
     target_size: tuple[int, int] = (160, 256),
     batch_size: int = 8,
 ) -> list[np.ndarray]:
-    """Encode multiple chunks in batches for efficiency."""
+    """Encode multiple windows in batches for efficiency."""
     embeddings = []
 
-    for i in range(0, len(chunk_frames_list), batch_size):
-        batch_chunks = chunk_frames_list[i:i + batch_size]
+    for i in range(0, len(window_frames_list), batch_size):
+        batch_windows = window_frames_list[i:i + batch_size]
 
-        # Resize all chunks in batch
+        # Resize all windows in batch
         batch_resized = []
-        for frames in batch_chunks:
+        for frames in batch_windows:
             frames_resized = resize_frames(frames, target_size)
             batch_resized.append(frames_resized)
 
@@ -128,75 +134,75 @@ def encode_chunk_batch(
     return embeddings
 
 
-def get_chunk_dirs(data_dir: Path) -> list[Path]:
-    """Get all chunk directories from the dataset."""
-    chunk_dirs = []
+def get_window_dirs(data_dir: Path) -> list[Path]:
+    """Get all window directories from the dataset."""
+    window_dirs = []
 
     for episode_dir in data_dir.iterdir():
         if episode_dir.is_dir():
-            for chunk_dir in episode_dir.iterdir():
-                if chunk_dir.is_dir() and chunk_dir.name.startswith("chunk_"):
-                    chunk_dirs.append(chunk_dir)
+            for window_dir in episode_dir.iterdir():
+                if window_dir.is_dir() and (window_dir.name.startswith("window_") or window_dir.name.startswith("chunk_")):
+                    window_dirs.append(window_dir)
 
-    return sorted(chunk_dirs)
+    return sorted(window_dirs)
 
-def process_chunks_in_batches(chunk_dirs: list[Path], model: MineCLIP, device: torch.device,
+def process_windows_in_batches(window_dirs: list[Path], model: MineCLIP, device: torch.device,
                              batch_size: int = 8):
-    """Process chunks in batches for better efficiency."""
-    chunks_to_process = []
-    for chunk_dir in chunk_dirs:
-        embedding_path = chunk_dir / "embedding.npy"
+    """Process windows in batches for better efficiency."""
+    windows_to_process = []
+    for window_dir in window_dirs:
+        embedding_path = window_dir / "embedding.npy"
         if not embedding_path.exists():
-            chunks_to_process.append(chunk_dir)
+            windows_to_process.append(window_dir)
 
-    if not chunks_to_process:
-        print("All chunks already have embeddings!")
+    if not windows_to_process:
+        print("All windows already have embeddings!")
         return
 
-    print(f"Processing {len(chunks_to_process)} chunks in batches of {batch_size}")
+    print(f"Processing {len(windows_to_process)} windows in batches of {batch_size}")
 
     processed_count = 0
-    for i in tqdm(range(0, len(chunks_to_process), batch_size), desc="Processing chunk batches"):
-        batch_dirs = chunks_to_process[i:i + batch_size]
+    for i in tqdm(range(0, len(windows_to_process), batch_size), desc="Processing window batches"):
+        batch_dirs = windows_to_process[i:i + batch_size]
 
         # Load frames for batch
         batch_frames = []
         valid_dirs = []
 
-        for chunk_dir in batch_dirs:
+        for window_dir in batch_dirs:
             try:
-                frames = load_frames(chunk_dir)
+                frames = load_frames(window_dir)
                 batch_frames.append(frames)
-                valid_dirs.append(chunk_dir)
+                valid_dirs.append(window_dir)
             except Exception as e:
-                print(f"Error loading {chunk_dir}: {e}")
+                print(f"Error loading {window_dir}: {e}")
 
         if not batch_frames:
             continue
 
         # Encode batch
         try:
-            embeddings = encode_chunk_batch(model, batch_frames, device, batch_size=len(batch_frames))
+            embeddings = encode_window_batch(model, batch_frames, device, batch_size=len(batch_frames))
 
             # Save embeddings
-            for chunk_dir, embedding in zip(valid_dirs, embeddings):
-                embedding_path = chunk_dir / "embedding.npy"
+            for window_dir, embedding in zip(valid_dirs, embeddings):
+                embedding_path = window_dir / "embedding.npy"
                 np.save(embedding_path, embedding)
                 processed_count += 1
 
         except Exception as e:
             print(f"Error processing batch: {e}")
 
-    print(f"Successfully processed {processed_count} chunks")
+    print(f"Successfully processed {processed_count} windows")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate embeddings for chunked dataset using MineCLIP")
+    parser = argparse.ArgumentParser(description="Generate embeddings for sliding window dataset using MineCLIP")
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="chunked_dataset",
-        help="Path to chunked dataset directory"
+        default="sliding_window_dataset",
+        help="Path to sliding window dataset directory"
     )
     parser.add_argument(
         "--checkpoint",
@@ -208,7 +214,7 @@ def main():
         "--batch-size",
         type=int,
         default=16,
-        help="Batch size for processing chunks"
+        help="Batch size for processing windows"
     )
     parser.add_argument(
         "--force-recompute",
@@ -218,7 +224,7 @@ def main():
     parser.add_argument(
         "--single-mode",
         action="store_true",
-        help="Process chunks one by one instead of in batches"
+        help="Process windows one by one instead of in batches"
     )
 
     args = parser.parse_args()
@@ -231,17 +237,17 @@ def main():
     model = load_model(args.checkpoint, device)
     print("Model loaded successfully")
 
-    # Get all chunk directories
+    # Get all window directories
     data_dir = Path(args.data_dir)
-    chunk_dirs = get_chunk_dirs(data_dir)
-    print(f"Found {len(chunk_dirs)} chunks to process")
+    window_dirs = get_window_dirs(data_dir)
+    print(f"Found {len(window_dirs)} windows to process")
 
-    if not chunk_dirs:
-        print(f"No chunks found in {data_dir}")
+    if not window_dirs:
+        print(f"No windows found in {data_dir}")
         return
 
-    process_chunks_in_batches(
-        chunk_dirs, model, device,
+    process_windows_in_batches(
+        window_dirs, model, device,
         batch_size=args.batch_size,
     )
 

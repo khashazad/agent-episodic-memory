@@ -24,15 +24,50 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Prompt template for Minecraft video description
-DESCRIPTION_PROMPT = """You are an expert at describing Minecraft gameplay videos.
-Analyze the provided video frames and describe what's happening throughout this gameplay session.
+DESCRIPTION_PROMPT = """
+### SYSTEM PROMPT
 
-Include in your description:
-1. Player Actions: What is the player doing? (mining, building, exploring, chopping wood)
-2. Environment: What location? What blocks/structures are visible?
-3. Progress: What goal appears to be in progress?
+You are an expert Minecraft AI researcher. Your task is to watch a short clip of gameplay (approx 0.8s) and **reverse-engineer the specific player controls** that caused the visual movement.
 
-Keep the description concise (2-3 sentences) and factual."""
+You must ignore the aesthetics of the biome and focus entirely on **Agent Dynamics**.
+
+**1. Visual Cues & Translation Rules:**
+Scan the video for these specific indicators to determine the action:
+
+* **The "Hand Sway" (Right side of screen):**
+    * *Rhythmic swinging/punching animation:* -> **Action: ATTACK/CHOP**
+    * *Static hand:* -> **Action: NO ATTACK**
+    * *Item moving up/down:* -> **Action: INTERACT/PLACE**
+* **Camera Motion (Optical Flow):**
+    * *World moving toward camera:* -> **Action: MOVE FORWARD**
+    * *Rhythmic vertical bobbing:* -> **Action: WALKING/SPRINTING** (If bobbing is fast, it is SPRINTING).
+    * *Sudden vertical rise:* -> **Action: JUMP**
+* **Targeting (Crosshair):**
+    * *Cracks appearing on a block:* -> **Action: ACTIVELY CHOPPING**
+    * *Highlight/Outline on a block:* -> **Action: TARGETING**
+
+**2. Analysis Process (Chain of Thought):**
+Before answering, briefly analyze:
+1.  **Movement:** Is the agent stationary, walking, or sprinting?
+2.  **Interaction:** Is the arm swinging? Are particles visible?
+3.  **Intent:** Is the agent trying to reach a tree, or are they currently harvesting it?
+
+**3. Output Format:**
+Provide a single, concise **Imperative Instruction** that describes the intent.
+* *Format:* `[Verb] [Object/Direction]`
+* *Constraint:* Max 10 words.
+* *Forbidden:* Do not describe the scenery ("I see a forest"). Only describe the *action*.
+
+**Few-Shot Examples:**
+* *Video shows:* Camera moving fast towards a tree, hand is still.
+    * **Output:** "Sprint forward towards the tree."
+* *Video shows:* Camera is stationary in front of wood, hand is swinging, cracks appear on wood.
+    * **Output:** "Hold attack to chop the log."
+* *Video shows:* Camera looks up 45 degrees, hand swings at leaves.
+    * **Output:** "Look up and clear the leaves."
+* *Video shows:* Camera spins right, world blurs.
+    * **Output:** "Turn right quickly to scan surroundings."
+"""
 
 
 def load_video_frames(video_path: Path, num_frames: int = 16) -> list[np.ndarray]:
@@ -139,17 +174,105 @@ class DescriptionGenerator:
         return description.strip()
 
 
-def get_episode_dirs(videos_dir: Path) -> list[Path]:
-    """Get all episode directories from MineRLTreechop-v0."""
-    episode_dirs = []
+def get_window_dirs(data_dir: Path) -> list[Path]:
+    """Get all window directories from the sliding window dataset."""
+    window_dirs = []
 
-    for item in videos_dir.iterdir():
-        if item.is_dir():
-            # Check if it has a recording.mp4
-            if (item / "recording.mp4").exists():
-                episode_dirs.append(item)
+    for episode_dir in data_dir.iterdir():
+        if episode_dir.is_dir():
+            for window_dir in episode_dir.iterdir():
+                if window_dir.is_dir() and (window_dir.name.startswith("window_") or window_dir.name.startswith("chunk_")):
+                    window_dirs.append(window_dir)
 
-    return sorted(episode_dirs)
+    return sorted(window_dirs)
+
+
+def load_window_frames(window_dir: Path) -> list[np.ndarray]:
+    """Load frames from a sliding window directory."""
+    # Try loading from pre-saved frames.npy first
+    frames_path = window_dir / "frames.npy"
+    if frames_path.exists():
+        frames_array = np.load(frames_path)
+        return [frame for frame in frames_array]
+
+    # Fallback to loading from video file
+    # Try window.mp4 first (sliding window format)
+    video_path = window_dir / "window.mp4"
+    if video_path.exists():
+        return load_video_frames_from_file(video_path)
+
+    # Fallback to chunk.mp4 (backwards compatibility)
+    video_path = window_dir / "chunk.mp4"
+    if video_path.exists():
+        return load_video_frames_from_file(video_path)
+
+    # Fallback to individual frame files
+    frames_dir = window_dir / "frames"
+    if frames_dir.exists():
+        return load_frames_from_images(frames_dir)
+
+    raise FileNotFoundError(f"No frame data found in {window_dir}")
+
+
+def load_video_frames_from_file(video_path: Path) -> list[np.ndarray]:
+    """Load all frames from a video file."""
+    cap = cv2.VideoCapture(str(video_path))
+
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
+
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb)
+
+    cap.release()
+
+    if len(frames) == 0:
+        raise ValueError(f"Video has no frames: {video_path}")
+
+    return frames
+
+
+def load_frames_from_images(frames_dir: Path) -> list[np.ndarray]:
+    """Load frames from individual image files."""
+    frame_paths = sorted(frames_dir.glob("frame_*.png"))
+    frames = []
+
+    for frame_path in frame_paths:
+        frame = cv2.imread(str(frame_path))
+        if frame is not None:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(frame_rgb)
+
+    if len(frames) == 0:
+        raise ValueError(f"No frames found in {frames_dir}")
+
+    return frames
+
+
+def save_description_to_window(window_dir: Path, description: str) -> bool:
+    """Save description to a single window directory.
+
+    Returns True if successful, False otherwise.
+    """
+    try:
+        output_path = window_dir / "llm_derived_description.txt"
+        with open(output_path, 'w') as f:
+            f.write(description)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save description to {window_dir}: {e}")
+        return False
+
+
+def check_window_has_description(window_dir: Path) -> bool:
+    """Check if a window already has a description."""
+    desc_path = window_dir / "llm_derived_description.txt"
+    return desc_path.exists()
 
 
 def save_description_to_chunks(episode_name: str, description: str, chunks_dir: Path) -> int:
@@ -197,87 +320,73 @@ def check_episode_has_descriptions(episode_name: str, chunks_dir: Path) -> bool:
     return False
 
 
-def process_episodes(
-    videos_dir: Path,
-    chunks_dir: Path,
+def process_windows(
+    data_dir: Path,
     generator: DescriptionGenerator,
-    num_frames: int = 16,
     resume: bool = True,
-    start_episode: int = 0,
-    end_episode: Optional[int] = None,
+    start_window: int = 0,
+    end_window: Optional[int] = None,
 ):
-    """Process episodes and generate descriptions."""
-    episode_dirs = get_episode_dirs(videos_dir)
+    """Process individual windows and generate descriptions."""
+    window_dirs = get_window_dirs(data_dir)
 
-    if not episode_dirs:
-        logger.error(f"No episodes found in {videos_dir}")
+    if not window_dirs:
+        logger.error(f"No windows found in {data_dir}")
         return
 
-    logger.info(f"Found {len(episode_dirs)} episodes")
+    logger.info(f"Found {len(window_dirs)} windows")
 
-    # Slice episodes based on start/end
-    if end_episode is not None:
-        episode_dirs = episode_dirs[start_episode:end_episode]
+    # Slice windows based on start/end
+    if end_window is not None:
+        window_dirs = window_dirs[start_window:end_window]
     else:
-        episode_dirs = episode_dirs[start_episode:]
+        window_dirs = window_dirs[start_window:]
 
-    logger.info(f"Processing episodes {start_episode} to {start_episode + len(episode_dirs)}")
+    logger.info(f"Processing windows {start_window} to {start_window + len(window_dirs)}")
 
     processed = 0
     skipped = 0
     failed = 0
-    total_chunks = 0
 
-    for episode_dir in tqdm(episode_dirs, desc="Processing episodes"):
-        episode_name = episode_dir.name
-
+    for window_dir in tqdm(window_dirs, desc="Processing windows"):
         # Check if already processed (resume mode)
-        if resume and check_episode_has_descriptions(episode_name, chunks_dir):
+        if resume and check_window_has_description(window_dir):
             skipped += 1
             continue
 
         try:
-            # Load video frames
-            video_path = episode_dir / "recording.mp4"
-            frames = load_video_frames(video_path, num_frames)
+            # Load window frames
+            frames = load_window_frames(window_dir)
 
             # Generate description
             description = generator.generate_description(frames)
 
-            # Save to all chunks
-            num_chunks = save_description_to_chunks(episode_name, description, chunks_dir)
-
-            processed += 1
-            total_chunks += num_chunks
-
-            logger.debug(f"Processed {episode_name}: {num_chunks} chunks updated")
+            # Save description
+            if save_description_to_window(window_dir, description):
+                processed += 1
+                logger.debug(f"Processed window: {window_dir.name}")
+            else:
+                failed += 1
 
         except Exception as e:
-            logger.error(f"Failed to process {episode_name}: {e}")
+            logger.error(f"Failed to process {window_dir}: {e}")
             failed += 1
 
     logger.info(f"Processing complete:")
-    logger.info(f"  Processed: {processed} episodes")
-    logger.info(f"  Skipped (already done): {skipped} episodes")
-    logger.info(f"  Failed: {failed} episodes")
-    logger.info(f"  Total chunks updated: {total_chunks}")
+    logger.info(f"  Processed: {processed} windows")
+    logger.info(f"  Skipped (already done): {skipped} windows")
+    logger.info(f"  Failed: {failed} windows")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate text descriptions for Minecraft gameplay videos using a local VLM"
+        description="Generate text descriptions for sliding window chunks using a local VLM"
     )
     parser.add_argument(
-        "--videos-dir",
+        "--data-dir",
         type=str,
-        default=".data/MineRLTreechop-v0",
-        help="Path to MineRLTreechop-v0 directory with episode videos"
-    )
-    parser.add_argument(
-        "--chunks-dir",
-        type=str,
-        default=".data/chunked_dataset_with_embeddings",
-        help="Path to chunked dataset directory"
+        default="sliding_window_dataset",
+        help="Path to sliding window dataset directory"
     )
     parser.add_argument(
         "--model",
@@ -286,33 +395,27 @@ def main():
         help="Hugging Face model ID for the VLM"
     )
     parser.add_argument(
-        "--num-frames",
-        type=int,
-        default=32,
-        help="Number of frames to sample from each video"
-    )
-    parser.add_argument(
         "--resume",
         action="store_true",
         default=True,
-        help="Skip episodes that already have descriptions"
+        help="Skip windows that already have descriptions"
     )
     parser.add_argument(
         "--no-resume",
         action="store_true",
-        help="Process all episodes, even if they already have descriptions"
+        help="Process all windows, even if they already have descriptions"
     )
     parser.add_argument(
-        "--start-episode",
+        "--start-window",
         type=int,
         default=0,
-        help="Start from this episode index"
+        help="Start from this window index"
     )
     parser.add_argument(
-        "--end-episode",
+        "--end-window",
         type=int,
         default=None,
-        help="End at this episode index (exclusive)"
+        help="End at this window index (exclusive)"
     )
     parser.add_argument(
         "--device",
@@ -327,30 +430,23 @@ def main():
     resume = args.resume and not args.no_resume
 
     # Validate paths
-    videos_dir = Path(args.videos_dir)
-    chunks_dir = Path(args.chunks_dir)
+    data_dir = Path(args.data_dir)
 
-    if not videos_dir.exists():
-        logger.error(f"Videos directory not found: {videos_dir}")
-        sys.exit(1)
-
-    if not chunks_dir.exists():
-        logger.error(f"Chunks directory not found: {chunks_dir}")
+    if not data_dir.exists():
+        logger.error(f"Data directory not found: {data_dir}")
         sys.exit(1)
 
     # Initialize generator
     generator = DescriptionGenerator(model_id=args.model, device=args.device)
     generator.load_model()
 
-    # Process episodes
-    process_episodes(
-        videos_dir=videos_dir,
-        chunks_dir=chunks_dir,
+    # Process windows
+    process_windows(
+        data_dir=data_dir,
         generator=generator,
-        num_frames=args.num_frames,
         resume=resume,
-        start_episode=args.start_episode,
-        end_episode=args.end_episode,
+        start_window=args.start_window,
+        end_window=args.end_window,
     )
 
 
