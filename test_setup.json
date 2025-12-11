@@ -1,7 +1,8 @@
 {
     "agent_mode" : true,
-    "render": false,
-    "test_runs": 5,
+    "render": true,
+    "test_runs": 2,
+    "max_frames": 250,
     "embedding_method": "mineclip-v1",
-    "use_rag": true
+    "use_rag": false
 }
