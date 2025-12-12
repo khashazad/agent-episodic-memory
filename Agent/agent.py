@@ -12,7 +12,7 @@ import json
 import os
 from collections import deque
 import matplotlib.pyplot as plt
-import keyboard
+# import keyboard
 from datetime import datetime, timezone
 from RAG_server import RAG
 
@@ -56,11 +56,11 @@ MINERL_ACTION_TEMPLATE = {
 # Valid keyboard keys and action mapping
 VALID_KEYS = set(['w', 'a', 's', 'd', 'space', 'i', 'j', 'k', 'l', 'shift', 'esc'])
 ACTION_MAP = {
-    'w': ("forward", 1), 
+    'w': ("forward", 1),
     'a': ("left", 1),
-    's': ("back", 1), 
-    'd': ("right", 1), 
-    'space': ("jump", 1), 
+    's': ("back", 1),
+    'd': ("right", 1),
+    'space': ("jump", 1),
     'i': ("camera", (-15, 0)),
     'k': ("camera", (15, 0)),
     'j': ("camera", (0, -15)),
@@ -124,7 +124,7 @@ system_msg = SystemMessage(
     )
 )
 
-container_id = None
+container_started = False
 
 # Saves the progress
 def log_result(wood):
@@ -154,36 +154,36 @@ def show_obs(obs_b64):
     plt.pause(0.001)  # tiny pause to update the window
 
 def exit_cleanup():
-    global container_id
-    if container_id:
+    global container_started
+    if container_started:
         try:
-            # Stop just our container
+            # Stop the docker-compose service
             subprocess.run(
-                ["docker", "stop", container_id],
+                ["docker", "compose", "stop", "minerl-env"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
-            print(f"Stopping docker container {container_id}")
+            print("Stopping docker-compose service minerl-env")
         except Exception as e:
-            print(f"Failed to stop container {container_id}: {e}")
+            print(f"Failed to stop docker-compose service: {e}")
 
 atexit.register(exit_cleanup)
 
 # Starts the docker container and gets first observation
 def create_env():
-    global container_id
+    global container_started
 
-    # Start the docker container in detached mode and capture its ID
-    proc = subprocess.run(
-        ["docker", "run", "--rm", "-d", "-p", "5001:5000", "strangeman44/minerl-env-server"],
+    # Start the docker-compose service in detached mode
+    subprocess.run(
+        ["docker", "compose", "up", "-d", "minerl-env"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         check=True,
     )
-    container_id = proc.stdout.strip()
-    print(f"Started environment server (container id: {container_id}). Waiting for setup.")
+    container_started = True
+    print("Started environment server using docker-compose (service: minerl-env). Waiting for setup.")
     time.sleep(20)
 
     print('Setting up environment...')
@@ -201,7 +201,7 @@ def reset_env():
 
     if resp.status_code != 200:
         raise RuntimeError(f'Status code error: {resp.status_code}')
-    
+
     return resp.json()['obs']
 
 # Submits the actions to the server
@@ -397,16 +397,17 @@ def run_agent_episode(agent, obs):
 
 # Runs the human controlled episode
 def run_human_episode():
-    keyboard_input = keyboard.read_key()
+    # keyboard_input = keyboard.read_key()
+    keyboard_input = input("Enter a key: ")
 
     if keyboard_input in VALID_KEYS:
         if keyboard_input == 'esc':
             return
-        
+
         action, value = ACTION_MAP[keyboard_input]
 
         obs, reward, done, action_body = submit_action({action: value})
-    
+
         time.sleep(0.01)
 
     return obs, reward, done
@@ -416,7 +417,7 @@ def run_agent():
 
     # Start the env
     obs = create_env()
-    
+
     # Start rendering
     if test_setup['render']:
         show_obs(obs)

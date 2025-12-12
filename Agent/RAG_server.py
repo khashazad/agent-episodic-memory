@@ -5,7 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from Database.client import ChromaClient
 import torch
-from mineclip.mineclip import MineCLIP
+from MineCLIP.mineclip import MineCLIP
 import numpy as np
 import cv2
 import base64
@@ -28,21 +28,21 @@ class RAG():
         }
 
         self.camera_re = re.compile(r"camera\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)")
-        
+
     # Initilizing the database
     def _init_database(self) -> ChromaClient:
         db = ChromaClient() # Database client
 
         if not db.connect():
             raise ConnectionError("Failed to connect to Chroma")
-        
+
         return db
 
     # Loads the embedding model for use
     # TODO change this to work with many embeddings
     def _load_embedding_model(self) -> MineCLIP:
         checkpoint_path = ".ckpts/attn.pth"
-        
+
         model = MineCLIP(
             arch="vit_base_p16_fz.v2.t2",
             resolution=(160, 256),
@@ -63,7 +63,7 @@ class RAG():
             resized_frame = cv2.resize(frame, (target_size[1], target_size[0]))
             resized.append(resized_frame)
         return np.array(resized)
-    
+
     def _b64_to_numpy(self, b64_string: str) -> np.ndarray:
         """Convert a base64-encoded PNG/JPEG to a NumPy RGB image."""
         # decode base64 → bytes
@@ -79,7 +79,7 @@ class RAG():
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
         return img_rgb
-    
+
     def _load_frames_from_b64_list(self, b64_list: list[str]) -> np.ndarray:
         """Convert a list of base64-encoded frames into a stacked NumPy array."""
         frames = []
@@ -139,18 +139,18 @@ class RAG():
                 action[p] = 1
 
         return action
-    
+
     # Returns the action sequence
     def _get_returned_action(self, chosen_action_sequence):
         # TODO fix for reranking
         action_list = chosen_action_sequence.strip().split("\n")
         last_action = action_list[-1]
-        
+
         # Dict representation
         action_dict = self.parse_action_line(last_action)
 
         return action_dict
-    
+
     # Turns the memory chunk into context
     def _summarize_memory_chunk(self, action: dict) -> str:
         # Build a readable description from the action dict
