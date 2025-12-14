@@ -11,6 +11,8 @@ import atexit
 import json
 import os
 from collections import deque
+import matplotlib
+matplotlib.use("TkAgg") 
 import matplotlib.pyplot as plt
 import keyboard
 from datetime import datetime, timezone
@@ -109,6 +111,7 @@ system_msg = SystemMessage(
         "- If you seem stuck, adjust camera and position.\n"
         "- When attack is triggered, attack will be performed enough times to break the block automatically."
         "- If you attack and no reward is given, you were not close enough to the tree."
+        "- The tree block must also be in the centre of the frame. You might have to adjust the camera so this is true."
         "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK. If you attack when you're not near a tree, you will be in trouble."
         "\n"
         "Tool usage:\n"
@@ -186,14 +189,6 @@ def show_obs(obs_b64: str):
     fig.canvas.draw_idle()
     fig.canvas.flush_events()
     plt.pause(0.001)
-
-# Renders the observation
-def show_obs(obs_b64):
-    obs = process_image(obs_b64)
-    plt.clf()
-    plt.imshow(obs)
-    plt.axis("off")
-    plt.pause(0.001)  # tiny pause to update the window
 
 def exit_cleanup():
     global container_id
@@ -408,6 +403,8 @@ def format_user_msg(obs, context, memory_str: str | None = None):
 
 # Runs the agent loop calling the tools
 def run_agent_episode(agent, obs):
+    reward = 0
+    done = False
 
     # Querying the memory
     memory_str = "No episodic memory yet (not enough frames)."
