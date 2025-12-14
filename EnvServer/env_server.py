@@ -42,14 +42,35 @@ def do_action():
     global env
     data = request.get_json()
 
-    # Take an action
-    # data['actions'] will be a dict of the actions and their values
-    action = env.action_space.noop()
-    action.update(data['actions'])
+    # Base action from client
+    base_action = env.action_space.noop()
+    base_action.update(data['actions'])
 
-    obs, reward, done, _ = env.step(action)
-    
-    return jsonify({'obs': obs_to_b64(obs), 'reward': reward, 'done': done})
+    # First step
+    obs, reward, done, info = env.step(base_action)
+    total_reward = reward
+    last_obs = obs
+    last_done = done
+
+    # If attack pressed, repeat a few more attack-only steps
+    if base_action.get('attack') == 1:
+        attack_action = env.action_space.noop()
+        attack_action['attack'] = 1
+
+        for _ in range(10):  # repeat count
+            if last_done:
+                break  # stop if episode is done
+
+            obs, reward, done, info = env.step(attack_action)
+            total_reward += reward
+            last_obs = obs
+            last_done = done
+
+    return jsonify({
+        'obs': obs_to_b64(last_obs),
+        'reward': float(total_reward),
+        'done': bool(last_done),
+    })
 
 # This resets the environments
 @app.route('/reset', methods=["POST"])

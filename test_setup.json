@@ -3,6 +3,7 @@
     "render": true,
     "test_runs": 2,
     "max_frames": 250,
+    "use_max_frames": false,
     "embedding_method": "mineclip-v1",
     "use_rag": false
 }
