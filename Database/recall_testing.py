@@ -115,11 +115,11 @@ class EmbeddingNoise(RecallTesting):
         return embedding
     
     # Load the many embeddings
-    def _get_random_embeddings_and_actions(self, num_embeddings, chunk_path):
+    def _get_random_embeddings_and_actions(self, chunk_paths):
         embeddings_actions = []
         descript = f"Collecting embeddings"
 
-        for _ in trange(num_embeddings, desc=descript):
+        for chunk_path in tqdm(chunk_paths, desc=descript):
             embedding = self._extract_embedding(chunk_path)
             action = self._extract_action_from_path(chunk_path)
 
@@ -128,9 +128,7 @@ class EmbeddingNoise(RecallTesting):
         return embeddings_actions
     
     # Calculate the recall of this system
-    def calc_recall(self, num_tests=100, noise_sigma=10, l2_normalize=False):
-        chunk_path = self._get_random_chunk_path()
-        embeddings_actions = self._get_random_embeddings_and_actions(num_tests, chunk_path)
+    def calc_recall(self, embeddings_actions, num_tests=100, noise_sigma=10, l2_normalize=False):
         correct_retrievals = 0
         descript = f"Calculating accuracy for sigma {noise_sigma}"
 
@@ -147,7 +145,20 @@ class EmbeddingNoise(RecallTesting):
                 correct_retrievals += 1
 
         return correct_retrievals / num_tests
+    
+    def get_recall_on_sigmas(self, num_tests=100, test_sigmas=[10]):
+        chunk_paths = []
+        recall_results = []
 
+        for _ in range(num_tests):
+            chunk_paths.append(self._get_random_chunk_path())
+
+        embeddings_actions = self._get_random_embeddings_and_actions(chunk_paths)
+
+        for sigma in test_sigmas:
+            recall_results.append(self.calc_recall(embeddings_actions=embeddings_actions, num_tests=num_tests, noise_sigma=sigma))
+
+        return recall_results
 class FrameNoise(RecallTesting):
     def __init__(self, target_size: tuple[int, int] = (160, 256)):
         super().__init__()
@@ -219,7 +230,20 @@ class FrameNoise(RecallTesting):
 
         return embedding[0]
     
-    def _extract_frames(self, chunk_path):
+    def load_frames_from_images(frames_dir: Path) -> np.ndarray:
+        """Load frames from individual PNG files."""
+        frame_paths = sorted(frames_dir.glob("frame_*.png"))
+        frames = []
+
+        for frame_path in frame_paths:
+            frame = cv2.imread(str(frame_path))
+            # Convert BGR to RGB
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(frame)
+
+        return np.array(frames)
+    
+    def calc_recall(self, num_tests=100, noise_sigma=10, clip: bool = True):
         pass
 
 def test_embedding_noise():
@@ -227,8 +251,7 @@ def test_embedding_noise():
     test_sigmas = [0.001, 0.01, 0.1, 1, 10, 100]
     recall_results = []
     
-    for sigma in test_sigmas:
-        recall_results.append(embedding_test.calc_recall(num_tests=1000, noise_sigma=sigma, l2_normalize=False))
+    recall_results = embedding_test.get_recall_on_sigmas(num_tests=1000, test_sigmas=test_sigmas)
 
     embedding_test.save_recall_csv(recall_results, test_sigmas)
     embedding_test.plot_recall(recall_results, test_sigmas)
