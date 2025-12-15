@@ -68,6 +68,13 @@ ACTION_MAP = {
     'shift': ("attack", 1)
 }
 
+# For rendering the frames
+_RENDER = {
+    "fig": None,
+    "ax": None,
+    "im": None,
+}
+
 # Setting the rag system
 if test_setup['use_rag']:
     rag = RAG()
@@ -93,14 +100,16 @@ system_msg = SystemMessage(
         "Your goal is to collect as much wood as possible. To do this, you must:\n"
         "1) Use camera to look around until you can see a tree.\n"
         "2) Use forward/left/right/back/jump to walk up to the tree.\n"
-        "3) When close enough and looking at the trunk, use attack repeatedly.\n"
+        "3) When close enough and looking at the trunk, use attack.\n"
         "\n"
         "Very important behavior guidelines:\n"
         "- Do NOT only use forward and attack. Use camera to turn and explore.\n"
         "- Use left/right/back/jump to navigate around obstacles or adjust position.\n"
         "- Prefer using camera at the start of an episode or when you see no tree.\n"
         "- If you seem stuck, adjust camera and position.\n"
-        "- The blocks only break after attacking for a long time. If you are close enough to the tree, you must attack enough times in a row to get the reward."
+        "- When attack is triggered, attack will be performed enough times to break the block automatically."
+        "- If you attack and no reward is given, you were not close enough to the tree."
+        "- The tree block must also be in the centre of the frame. You might have to adjust the camera so this is true."
         "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK. If you attack when you're not near a tree, you will be in trouble."
         "\n"
         "Tool usage:\n"
@@ -145,13 +154,39 @@ def process_image(obs_b64):
 
     return obs
 
-# Renders the observation
-def show_obs(obs_b64):
-    obs = process_image(obs_b64)
-    plt.clf()
-    plt.imshow(obs)
-    plt.axis("off")
-    plt.pause(0.001)  # tiny pause to update the window
+def init_renderer(first_obs_b64: str):
+    """Create the matplotlib window ONCE."""
+    frame = process_image(first_obs_b64)
+
+    plt.ion()  # interactive mode
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=120)  # bigger window
+    ax.set_axis_off()
+
+    im = ax.imshow(frame, interpolation="nearest")  # crisp pixels
+    fig.tight_layout(pad=0)
+
+    _RENDER["fig"] = fig
+    _RENDER["ax"] = ax
+    _RENDER["im"] = im
+
+    # show without blocking
+    plt.show(block=False)
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+
+def show_obs(obs_b64: str):
+    """Update the existing window instead of clearing/recreating."""
+    if _RENDER["fig"] is None:
+        init_renderer(obs_b64)
+        return
+
+    frame = process_image(obs_b64)
+    _RENDER["im"].set_data(frame)
+
+    fig = _RENDER["fig"]
+    fig.canvas.draw_idle()
+    fig.canvas.flush_events()
+    plt.pause(0.001)
 
 def exit_cleanup():
     global container_started
@@ -349,7 +384,7 @@ def format_user_msg(obs, context, memory_str: str | None = None):
                     f"Episodic memory (similar past situation):\n{memory_block}\n\n"
                     f"Goal: {goal}\n\n"
                     "Remember: You only get reward when you collect WOOD LOGS from trees. "
-                    "If there is no reward, you might still be hitting wood. "
+                    "If there is no reward, you did not hit the wood. "
                     "Decide the next action and call the `step_env` tool."
                 ),
             },
@@ -366,6 +401,8 @@ def format_user_msg(obs, context, memory_str: str | None = None):
 
 # Runs the agent loop calling the tools
 def run_agent_episode(agent, obs):
+    reward = 0
+    done = False
 
     # Querying the memory
     memory_str = "No episodic memory yet (not enough frames)."
@@ -406,11 +443,15 @@ def run_human_episode():
 
         action, value = ACTION_MAP[keyboard_input]
 
+        print('Action: {action}, value: {value}')
+
         obs, reward, done, action_body = submit_action({action: value})
 
         time.sleep(0.01)
 
-    return obs, reward, done
+        return obs, reward, done
+
+    return original_obs, 0, False
 
 def run_agent():
     max_frames = test_setup["max_frames"]
@@ -420,8 +461,7 @@ def run_agent():
 
     # Start rendering
     if test_setup['render']:
-        show_obs(obs)
-        time.sleep(5)
+        init_renderer(obs)
 
     if test_setup['agent_mode']:
         agent = setup_agent()
@@ -437,7 +477,7 @@ def run_agent():
             if test_setup['agent_mode']:
                 obs, reward, done = run_agent_episode(agent, obs)
             else:
-                obs, reward, done = run_human_episode()
+                obs, reward, done = run_human_episode(obs)
 
             if reward != 0:
                 wood_count += 1
@@ -450,7 +490,7 @@ def run_agent():
             cur_frames += 1
 
             # the model isn't doing anything
-            if cur_frames >= max_frames:
+            if test_setup['use_max_frames'] and cur_frames >= max_frames:
                 break
 
         # Saving the results of that run
