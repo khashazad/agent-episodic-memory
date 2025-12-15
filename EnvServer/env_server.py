@@ -57,7 +57,7 @@ def do_action():
         attack_action = env.action_space.noop()
         attack_action['attack'] = 1
 
-        for _ in range(10):  # repeat count
+        for _ in range(14):  # repeat count
             if last_done:
                 break  # stop if episode is done
 

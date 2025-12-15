@@ -81,12 +81,18 @@ if test_setup['use_rag']:
 
 example_image_1 = "data:image/png;base64," + example_images["example_1"]
 example_image_2 = "data:image/png;base64," + example_images["example_2"]
+example_image_3 = "data:image/png;base64," + example_images["example_3"]
+example_image_4 = "data:image/png;base64," + example_images["example_4"]
 
 example_action_1 = {"forward": 1}
 example_action_2 = {"attack": 1}
+example_action_3 = {"camera", (0, -30)}
+example_action_4 = {"camera", (30, 0)}
 
 explanation_1 = "The agent saw the tree (object in white) in the distance and started moving towards it."
 explanation_2 = "The agent is now at the tree. It continuously attacks the tree until the block is gone. Once the block is broken the reward is given."
+explanation_3 = "The agent can only see dirt. There is nothing useful here and it should not be attacked. The agent should look around to find trees."
+explanation_4 = "The agent just destroyed wood. To collect more the viewpoint needs to be changed. The agent can look up or down."
 
 system_msg = SystemMessage(
     content=(
@@ -110,6 +116,9 @@ system_msg = SystemMessage(
         "- When attack is triggered, attack will be performed enough times to break the block automatically."
         "- If you attack and no reward is given, you were not close enough to the tree."
         "- The tree block must also be in the centre of the frame. You might have to adjust the camera so this is true."
+        "- If you attacked as the last option and the log did not break you know something is not right."
+        "- You should never need to attack twice in a row."
+        "- Once wood is destroyed, it still needs to be picked up by walking over the fallen wood."
         "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK. If you attack when you're not near a tree, you will be in trouble."
         "\n"
         "Tool usage:\n"
@@ -488,9 +497,11 @@ def run_agent():
                 show_obs(obs)
 
             cur_frames += 1
+            print(f'Frame {cur_frames}')
 
             # the model isn't doing anything
             if test_setup['use_max_frames'] and cur_frames >= max_frames:
+                cur_frames = 0
                 break
 
         # Saving the results of that run
@@ -498,6 +509,8 @@ def run_agent():
 
         # Resetting the env and tracking
         wood_count = 0
+        ACTION_HISTORY.clear()
+        FRAME_HISTORY.clear()
         obs = reset_env()
 
 
