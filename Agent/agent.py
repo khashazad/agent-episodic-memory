@@ -14,7 +14,11 @@ from collections import deque
 import matplotlib.pyplot as plt
 # import keyboard
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 from RAG_server import RAG
+
+# Load environment variables from .env file
+load_dotenv()
 
 try:
     with open('config.json', 'r') as f:
@@ -36,6 +40,11 @@ with open('test_setup.json', 'r') as f:
 
 with open('example_images.json', 'r') as f:
     example_images = json.load(f)
+
+# Remote server configuration (from .env)
+USE_REMOTE_SERVER = os.environ.get("USE_REMOTE_SERVER", "false").lower() == "true"
+SERVER_URL = os.environ.get("MINERL_SERVER_URL", "http://127.0.0.1:5001")
+ENV_ID = None  # Used to identify environment session on remote server
 
 ACTION_HISTORY = deque(maxlen=5)
 FRAME_HISTORY = deque(maxlen=16)
@@ -198,50 +207,90 @@ def show_obs(obs_b64: str):
     plt.pause(0.001)
 
 def exit_cleanup():
-    global container_started
-    if container_started:
-        try:
-            # Stop the docker-compose service
-            subprocess.run(
-                ["docker", "compose", "stop", "minerl-env"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            print("Stopping docker-compose service minerl-env")
-        except Exception as e:
-            print(f"Failed to stop docker-compose service: {e}")
+    global container_started, ENV_ID
+
+    if USE_REMOTE_SERVER:
+        # Clean up remote environment session
+        if ENV_ID:
+            try:
+                requests.post(
+                    f"{SERVER_URL}/destroy",
+                    json={"env_id": ENV_ID},
+                    timeout=5
+                )
+                print(f"Destroyed remote environment session: {ENV_ID}")
+            except Exception as e:
+                print(f"Failed to destroy remote environment: {e}")
+    else:
+        # Clean up local Docker container
+        if container_started:
+            try:
+                subprocess.run(
+                    ["docker", "compose", "stop", "minerl-env"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                print("Stopping docker-compose service minerl-env")
+            except Exception as e:
+                print(f"Failed to stop docker-compose service: {e}")
 
 atexit.register(exit_cleanup)
 
-# Starts the docker container and gets first observation
+# Starts the environment (local Docker or remote server)
 def create_env():
-    global container_started
+    global container_started, ENV_ID
 
-    # Start the docker-compose service in detached mode
-    subprocess.run(
-        ["docker", "compose", "up", "-d", "minerl-env"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=True,
-    )
-    container_started = True
-    print("Started environment server using docker-compose (service: minerl-env). Waiting for setup.")
-    time.sleep(20)
+    if USE_REMOTE_SERVER:
+        # Remote mode: call the multi-env server's /create endpoint
+        print(f"Connecting to remote MineRL server at {SERVER_URL}...")
 
-    print('Setting up environment...')
-    print('LONG WAIT')
-    resp = requests.get(url='http://127.0.0.1:5001/start')
+        resp = requests.post(
+            f"{SERVER_URL}/create",
+            json={"env_type": "MineRLTreechop-v0"}
+        )
 
-    if resp.status_code != 200:
-        raise RuntimeError(f'Status code error: {resp.status_code}')
+        if resp.status_code != 200:
+            raise RuntimeError(f'Failed to create remote environment: {resp.status_code} - {resp.text}')
 
-    return resp.json()['obs']
+        data = resp.json()
+        ENV_ID = data['env_id']
+        print(f"Created remote environment session: {ENV_ID}")
+
+        return data['obs']
+    else:
+        # Local mode: start Docker container
+        subprocess.run(
+            ["docker", "compose", "up", "-d", "minerl-env"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        container_started = True
+        print("Started environment server using docker-compose (service: minerl-env). Waiting for setup.")
+        time.sleep(20)
+
+        print('Setting up environment...')
+        print('LONG WAIT')
+        resp = requests.get(url=f'{SERVER_URL}/start')
+
+        if resp.status_code != 200:
+            raise RuntimeError(f'Status code error: {resp.status_code}')
+
+        return resp.json()['obs']
 
 # Resets the environment for different runs
 def reset_env():
-    resp = requests.post(url='http://127.0.0.1:5001/reset')
+    if USE_REMOTE_SERVER:
+        # Remote mode: include env_id in request
+        resp = requests.post(
+            f"{SERVER_URL}/reset",
+            json={"env_id": ENV_ID}
+        )
+    else:
+        # Local mode: simple reset
+        resp = requests.post(url=f'{SERVER_URL}/reset')
 
     if resp.status_code != 200:
         raise RuntimeError(f'Status code error: {resp.status_code}')
@@ -279,10 +328,13 @@ def submit_action(
                 raise ValueError(f"Unknown action name: {action}")
             action_body[action] = int(value)
 
+    # Build request body (include env_id for remote server)
     body = {"actions": action_body}
+    if USE_REMOTE_SERVER:
+        body["env_id"] = ENV_ID
 
     resp = requests.post(
-        url="http://127.0.0.1:5001/action",
+        url=f"{SERVER_URL}/action",
         json=body,
     )
 
