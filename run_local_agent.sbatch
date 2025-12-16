@@ -114,11 +114,12 @@ fi
 # Create results directory if it doesn't exist
 mkdir -p Agent/Results
 
-echo "Running command: uv run python Agent/agent_local.py"
+echo "Running command: uv run python -u Agent/agent_local.py"
 echo ""
 
-# Run the local agent script using uv
-uv run python Agent/agent_local.py
+# Run the local agent script using uv with unbuffered output (-u flag)
+# This ensures progress messages appear immediately in sbatch output
+uv run python -u Agent/agent_local.py
 
 # Check exit status
 if [ $? -eq 0 ]; then

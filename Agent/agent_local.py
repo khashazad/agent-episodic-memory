@@ -14,6 +14,7 @@ Or via sbatch:
 from langchain.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage
 import subprocess
+import sys
 import time
 import requests
 import base64
@@ -30,6 +31,10 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Enable HuggingFace progress bars and ensure output is unbuffered
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # Faster downloads
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer warnings
 
 # Import HuggingFace dependencies
 try:
@@ -422,6 +427,7 @@ def setup_local_agent():
     """Setup local Hugging Face model-based agent."""
     print(f"\nLoading local model: {LOCAL_MODEL_NAME}")
     print(f"Configured device: {LOCAL_MODEL_DEVICE}")
+    sys.stdout.flush()
 
     # Determine the device
     if LOCAL_MODEL_DEVICE == 'auto':
@@ -447,17 +453,39 @@ def setup_local_agent():
         torch_dtype = torch.float32  # CPU typically needs float32
 
     print(f"Using dtype: {torch_dtype}")
+    sys.stdout.flush()
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL_NAME)
+    # Load tokenizer with progress indication
+    print("\n[1/5] Loading tokenizer...")
+    sys.stdout.flush()
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            LOCAL_MODEL_NAME,
+            trust_remote_code=True,
+            resume_download=True,
+        )
+        print("✓ Tokenizer loaded successfully")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"✗ Failed to load tokenizer: {e}")
+        sys.stdout.flush()
+        raise
 
     # Set device_map for automatic device placement
     device_map = "auto" if device in ['cuda', 'mps'] else None
 
     # Check if this is a vision-language model by inspecting the config
+    print("\n[2/5] Loading model configuration...")
+    sys.stdout.flush()
     try:
-        config = AutoConfig.from_pretrained(LOCAL_MODEL_NAME, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(
+            LOCAL_MODEL_NAME,
+            trust_remote_code=True,
+            resume_download=True,
+        )
         config_class_name = config.__class__.__name__
+        print(f"✓ Config loaded: {config_class_name}")
+        sys.stdout.flush()
 
         # Vision-language models typically have "VL" in their config name
         # or are not supported by AutoModelForCausalLM
@@ -467,13 +495,22 @@ def setup_local_agent():
             'Multimodal' in config_class_name
         )
 
+        print("\n[3/5] Loading model weights (this may take several minutes)...")
+        print("      If this is the first time, the model will be downloaded from HuggingFace.")
+        print("      Large models can take 5-15 minutes to download depending on network speed.")
+        print("      Progress bars should appear below if downloading...")
+        sys.stdout.flush()
+
         if is_vision_language:
-            print(f"Detected vision-language model ({config_class_name}), using AutoModel")
+            print(f"      Detected vision-language model ({config_class_name}), using AutoModel")
+            sys.stdout.flush()
             model = AutoModel.from_pretrained(
                 LOCAL_MODEL_NAME,
                 dtype=torch_dtype,
                 device_map=device_map,
                 trust_remote_code=True,
+                resume_download=True,
+                low_cpu_mem_usage=True,
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
@@ -481,49 +518,92 @@ def setup_local_agent():
                 dtype=torch_dtype,
                 device_map=device_map,
                 trust_remote_code=True,
+                resume_download=True,
+                low_cpu_mem_usage=True,
             )
+        print("✓ Model weights loaded successfully")
+        sys.stdout.flush()
     except Exception as e:
         # Fallback: try AutoModelForCausalLM first, then AutoModel if it fails
-        print(f"Config check failed ({e}), trying AutoModelForCausalLM first...")
+        print(f"✗ Config check failed ({e}), trying fallback loading methods...")
+        print("\n[3/5] Attempting to load with AutoModelForCausalLM...")
+        sys.stdout.flush()
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 LOCAL_MODEL_NAME,
                 dtype=torch_dtype,
                 device_map=device_map,
                 trust_remote_code=True,
+                resume_download=True,
+                low_cpu_mem_usage=True,
             )
-        except ValueError:
-            print("AutoModelForCausalLM failed, trying AutoModel...")
+            print("✓ Model loaded with AutoModelForCausalLM")
+            sys.stdout.flush()
+        except ValueError as ve:
+            print(f"✗ AutoModelForCausalLM failed: {ve}")
+            print("   Trying AutoModel...")
+            sys.stdout.flush()
             model = AutoModel.from_pretrained(
                 LOCAL_MODEL_NAME,
                 dtype=torch_dtype,
                 device_map=device_map,
                 trust_remote_code=True,
+                resume_download=True,
+                low_cpu_mem_usage=True,
             )
+            print("✓ Model loaded with AutoModel")
+            sys.stdout.flush()
+        except Exception as e2:
+            print(f"✗ Failed to load model: {e2}")
+            sys.stdout.flush()
+            raise
 
     # Move to device if not using device_map
     if device_map is None:
+        print(f"\n[4/5] Moving model to {device}...")
+        sys.stdout.flush()
         model = model.to(device)
+        print(f"✓ Model moved to {device}")
+        sys.stdout.flush()
 
     # Create the text generation pipeline
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=LOCAL_MODEL_MAX_NEW_TOKENS,
-        do_sample=True,
-        temperature=LOCAL_MODEL_TEMPERATURE,
-        top_p=0.9,
-        return_full_text=False,
-    )
+    print("\n[5/5] Creating text generation pipeline...")
+    sys.stdout.flush()
+    try:
+        pipe = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=LOCAL_MODEL_MAX_NEW_TOKENS,
+            do_sample=True,
+            temperature=LOCAL_MODEL_TEMPERATURE,
+            top_p=0.9,
+            return_full_text=False,
+        )
+        print("✓ Pipeline created successfully")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"✗ Failed to create pipeline: {e}")
+        sys.stdout.flush()
+        raise
 
     # Wrap in LangChain's HuggingFacePipeline
-    hf_llm = HuggingFacePipeline(pipeline=pipe)
+    print("\nWrapping in LangChain interface...")
+    sys.stdout.flush()
+    try:
+        hf_llm = HuggingFacePipeline(pipeline=pipe)
+        chat_model = ChatHuggingFace(llm=hf_llm)
+        print("✓ LangChain wrapper created successfully")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"✗ Failed to create LangChain wrapper: {e}")
+        sys.stdout.flush()
+        raise
 
-    # Create ChatHuggingFace wrapper for chat-style interaction
-    chat_model = ChatHuggingFace(llm=hf_llm)
-
-    print(f"\nLocal model {LOCAL_MODEL_NAME} loaded successfully!")
+    print(f"\n{'='*50}")
+    print(f"Local model {LOCAL_MODEL_NAME} loaded successfully!")
+    print(f"{'='*50}\n")
+    sys.stdout.flush()
     return chat_model
 
 
