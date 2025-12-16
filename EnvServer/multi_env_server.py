@@ -5,6 +5,7 @@ Includes automatic cleanup of inactive environments.
 """
 
 import gym
+import minerl  # This registers MineRL environments with gym
 from flask import Flask, jsonify, request
 import numpy as np
 from PIL import Image
