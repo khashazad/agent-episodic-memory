@@ -34,7 +34,7 @@ load_dotenv()
 # Import HuggingFace dependencies
 try:
     from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
-    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+    from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel, AutoConfig, pipeline
     import torch
     HF_AVAILABLE = True
 except ImportError as e:
@@ -454,13 +454,52 @@ def setup_local_agent():
     # Set device_map for automatic device placement
     device_map = "auto" if device in ['cuda', 'mps'] else None
 
-    # Load model
-    model = AutoModelForCausalLM.from_pretrained(
-        LOCAL_MODEL_NAME,
-        dtype=torch_dtype,
-        device_map=device_map,
-        trust_remote_code=True,
-    )
+    # Check if this is a vision-language model by inspecting the config
+    try:
+        config = AutoConfig.from_pretrained(LOCAL_MODEL_NAME, trust_remote_code=True)
+        config_class_name = config.__class__.__name__
+
+        # Vision-language models typically have "VL" in their config name
+        # or are not supported by AutoModelForCausalLM
+        is_vision_language = (
+            'VL' in config_class_name or
+            'Vision' in config_class_name or
+            'Multimodal' in config_class_name
+        )
+
+        if is_vision_language:
+            print(f"Detected vision-language model ({config_class_name}), using AutoModel")
+            model = AutoModel.from_pretrained(
+                LOCAL_MODEL_NAME,
+                dtype=torch_dtype,
+                device_map=device_map,
+                trust_remote_code=True,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                LOCAL_MODEL_NAME,
+                dtype=torch_dtype,
+                device_map=device_map,
+                trust_remote_code=True,
+            )
+    except Exception as e:
+        # Fallback: try AutoModelForCausalLM first, then AutoModel if it fails
+        print(f"Config check failed ({e}), trying AutoModelForCausalLM first...")
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                LOCAL_MODEL_NAME,
+                dtype=torch_dtype,
+                device_map=device_map,
+                trust_remote_code=True,
+            )
+        except ValueError:
+            print("AutoModelForCausalLM failed, trying AutoModel...")
+            model = AutoModel.from_pretrained(
+                LOCAL_MODEL_NAME,
+                dtype=torch_dtype,
+                device_map=device_map,
+                trust_remote_code=True,
+            )
 
     # Move to device if not using device_map
     if device_map is None:

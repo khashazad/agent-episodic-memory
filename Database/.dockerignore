@@ -1,0 +1,16 @@
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore test files
+*.ipynb
+*_testing.py
+
+# Ignore other seed scripts (only need seed_collections.py)
+seed.py
+seed_sliding_window.py
+
+# Ignore local development files
+.env
+*.log

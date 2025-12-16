@@ -13,10 +13,35 @@ services:
     networks:
       - agent-network
     # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+    #   test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat')\""]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+    #   start_period: 10s
+
+  # Seeder service - runs once on first database creation
+  chromadb-seeder:
+    build:
+      context: ./Database
+      dockerfile: Dockerfile
+    container_name: minecraft-chromadb-seeder
+    depends_on:
+      - chromadb
+    volumes:
+      - ./.data:/data:ro                    # Mount CSV data (read-only)
+      - ./data:/chroma/chroma               # Mount chroma data for seed marker
+    environment:
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+    command:
+      - "--csv-v1=/data/chroma-data-v1.csv"
+      - "--collection-v1=episodic_memory_v1"
+      - "--csv-v2=/data/chroma-data-v2.csv"
+      - "--collection-v2=episodic_memory_v2"
+      - "--batch-size=100"
+    networks:
+      - agent-network
+    restart: "no"  # Run once and exit
 
   # minerl-env:
   #   platform: linux/amd64
@@ -46,33 +71,33 @@ services:
   #     # chromadb:
   #       # condition: service_healthy
 
-  # # Multi-environment server (supports multiple concurrent agents)
-  # minerl-multi-env:
-  #   platform: linux/amd64
-  #   image: khashazad/minerl-multi-env:v1
-  #   container_name: minecraft-multi-env
-  #   mem_limit: 16g
-  #   memswap_limit: 16g
-  #   shm_size: 4g
-  #   ports:
-  #     - "5002:5000"
-  #   environment:
-  #     - DISPLAY=:99
-  #     - JAVA_OPTS=-Xmx6G -Xms2G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap
-  #     - _JAVA_OPTIONS=-Xmx6G -Xms2G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true
-  #     - MALLOC_ARENA_MAX=4
-  #     - INACTIVITY_TIMEOUT=300
-  #     - CLEANUP_INTERVAL=60
-  #   ulimits:
-  #     core: 0
-  #     nofile:
-  #       soft: 65536
-  #       hard: 65536
-  #     memlock:
-  #       soft: -1
-  #       hard: -1
-  #   networks:
-  #     - agent-network
+  # Multi-environment server (supports multiple concurrent agents)
+  minerl-multi-env:
+    platform: linux/amd64
+    image: khashazad/minerl-multi-env:v1
+    container_name: minecraft-multi-env
+    mem_limit: 16g
+    memswap_limit: 16g
+    shm_size: 4g
+    ports:
+      - "5002:5000"
+    environment:
+      - DISPLAY=:99
+      - JAVA_OPTS=-Xmx6G -Xms2G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap
+      - _JAVA_OPTIONS=-Xmx6G -Xms2G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true
+      - MALLOC_ARENA_MAX=4
+      - INACTIVITY_TIMEOUT=300
+      - CLEANUP_INTERVAL=60
+    ulimits:
+      core: 0
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - agent-network
 
 networks:
   agent-network:
