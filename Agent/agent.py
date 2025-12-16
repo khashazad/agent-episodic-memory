@@ -257,6 +257,8 @@ def create_env():
         ENV_ID = data['env_id']
         print(f"Created remote environment session: {ENV_ID}")
 
+        time.sleep(20) # wait for the environment to start
+
         return data['obs']
     else:
         # Local mode: start Docker container

@@ -277,8 +277,9 @@ def create_env():
             resp = requests.post(
                 f"{SERVER_URL}/create",
                 json={"env_type": "MineRLTreechop-v0"},
-                timeout=180  # 3 minute timeout - MineRL takes time to start Minecraft
             )
+
+
         except requests.exceptions.Timeout:
             raise RuntimeError(f"Timeout connecting to MineRL server at {SERVER_URL}. Is the server running?")
         except requests.exceptions.ConnectionError as e:
@@ -287,8 +288,12 @@ def create_env():
         if resp.status_code != 200:
             raise RuntimeError(f'Failed to create remote environment: {resp.status_code} - {resp.text}')
 
+
         data = resp.json()
         ENV_ID = data['env_id']
+
+        time.sleep(60) # wait for the environment to start
+
         print(f"Created remote environment session: {ENV_ID}")
 
         return data['obs']
