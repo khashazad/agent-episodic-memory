@@ -242,4 +242,33 @@ if __name__ == "__main__":
     print(f"Starting Multi-Environment MineRL Server")
     print(f"Inactivity timeout: {INACTIVITY_TIMEOUT} seconds")
     print(f"Cleanup interval: {CLEANUP_INTERVAL} seconds")
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+
+    # Use gunicorn if available (production), otherwise fall back to Flask dev server
+    try:
+        from gunicorn.app.base import BaseApplication
+
+        class GunicornApp(BaseApplication):
+            def __init__(self, app, options=None):
+                self.options = options or {}
+                self.application = app
+                super().__init__()
+
+            def load_config(self):
+                for key, value in self.options.items():
+                    self.cfg.set(key.lower(), value)
+
+            def load(self):
+                return self.application
+
+        options = {
+            'bind': '0.0.0.0:5000',
+            'workers': 1,
+            'threads': 4,
+            'timeout': 180,  # 3 minutes for environment creation
+            'worker_class': 'gthread',
+        }
+        print("Starting with Gunicorn (timeout: 180s)")
+        GunicornApp(app, options).run()
+    except ImportError:
+        print("Gunicorn not available, using Flask dev server (may timeout on long requests)")
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

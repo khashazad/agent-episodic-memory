@@ -5,6 +5,9 @@ FROM strangeman44/minerl-env-server:latest
 # Copy the multi-environment server script (replaces the single-env version)
 COPY multi_env_server.py /app/multi_env_server.py
 
+# Install gunicorn for production-grade request handling with longer timeouts
+RUN conda run -n minerl pip install gunicorn
+
 # Expose Flask port
 EXPOSE 5000
 

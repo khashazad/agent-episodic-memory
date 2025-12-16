@@ -273,10 +273,16 @@ def create_env():
     if USE_REMOTE_SERVER:
         print(f"Connecting to remote MineRL server at {SERVER_URL}...")
 
-        resp = requests.post(
-            f"{SERVER_URL}/create",
-            json={"env_type": "MineRLTreechop-v0"}
-        )
+        try:
+            resp = requests.post(
+                f"{SERVER_URL}/create",
+                json={"env_type": "MineRLTreechop-v0"},
+                timeout=180  # 3 minute timeout - MineRL takes time to start Minecraft
+            )
+        except requests.exceptions.Timeout:
+            raise RuntimeError(f"Timeout connecting to MineRL server at {SERVER_URL}. Is the server running?")
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError(f"Could not connect to MineRL server at {SERVER_URL}. Is the server running?\nError: {e}")
 
         if resp.status_code != 200:
             raise RuntimeError(f'Failed to create remote environment: {resp.status_code} - {resp.text}')
@@ -446,7 +452,7 @@ def setup_local_agent():
     # Load model
     model = AutoModelForCausalLM.from_pretrained(
         LOCAL_MODEL_NAME,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
         device_map=device_map,
         trust_remote_code=True,
     )
@@ -641,15 +647,25 @@ def run_agent_episode(agent, obs):
 
 def run_agent():
     """Main agent execution loop."""
+    print("\n" + "="*50)
+    print("Starting agent...")
+    print("="*50 + "\n")
+
+    # Setup the local agent first (so we know model loading works)
+    print("Setting up local LLM agent...")
+    agent = setup_local_agent()
+
     # Start the env
+    print("\nConnecting to MineRL environment...")
+    print(f"  Server URL: {SERVER_URL}")
+    print(f"  Remote mode: {USE_REMOTE_SERVER}")
     obs = create_env()
+
+    print("Environment connected successfully!")
 
     # Start rendering
     if RENDER:
         init_renderer(obs)
-
-    # Setup the local agent
-    agent = setup_local_agent()
 
     done = False
     reward = 0
