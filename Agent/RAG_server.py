@@ -101,7 +101,6 @@ class RAG():
             torch.from_numpy(frames_resized)
             .permute(0, 3, 1, 2)      # [16, 3, 160, 256]
             .unsqueeze(0)             # [1, 16, 3, 160, 256]
-            .float()
             .to(self.device)
         )
 

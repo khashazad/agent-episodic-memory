@@ -59,13 +59,14 @@ class RecallTesting():
                 writer.writerow([s, r])
     
     # Plotting the recall
-    def plot_recall(self, recalls, sigmas):
+    def plot_recall(self, recalls, sigmas, plot_type='log'):
         plt.figure()
         plt.plot(sigmas, recalls, marker='o')
         plt.xlabel("Noise Sigma")
         plt.ylabel("Recall@1")
         plt.title("Retrieval Recall vs Embedding Noise")
-        plt.xscale("log")
+        if plot_type == 'log':
+            plt.xscale("log")
         plt.grid(True)
         plt.show()
 
@@ -220,7 +221,6 @@ class FrameNoise(RecallTesting):
             torch.from_numpy(frames_resized)
             .permute(0, 3, 1, 2)      # [16, 3, 160, 256]
             .unsqueeze(0)             # [1, 16, 3, 160, 256]
-            .float()
             .to(self.device)
         )
 
@@ -230,21 +230,65 @@ class FrameNoise(RecallTesting):
 
         return embedding[0]
     
-    def load_frames_from_images(frames_dir: Path) -> np.ndarray:
-        """Load frames from individual PNG files."""
-        frame_paths = sorted(frames_dir.glob("frame_*.png"))
-        frames = []
+    # Load the embedding from the folder
+    def _extract_embedding(self, chunk_path, sigma):
+        path = chunk_path / "frames.npy"
+        if not path.exists():
+            raise FileNotFoundError(path)
 
-        for frame_path in frame_paths:
-            frame = cv2.imread(str(frame_path))
-            # Convert BGR to RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(frame)
+        frames = np.load(path)
 
-        return np.array(frames)
+        # Add noise
+        noisy_frames = self._add_gaussian_noise_frames(frames=frames, sigma=sigma)
+
+        # Create the embedding
+        embedding = self._embed_frames(noisy_frames)
+
+        return embedding
     
-    def calc_recall(self, num_tests=100, noise_sigma=10, clip: bool = True):
-        pass
+    # Load the many embeddings
+    def _get_random_embeddings_and_actions(self, chunk_paths, sigma):
+        embeddings_actions = []
+        descript = f"Collecting embeddings"
+
+        for chunk_path in tqdm(chunk_paths, desc=descript):
+            embedding = self._extract_embedding(chunk_path, sigma)
+            action = self._extract_action_from_path(chunk_path)
+
+            embeddings_actions.append((embedding, action))
+
+        return embeddings_actions
+    
+    def calc_recall(self, embeddings_actions, num_tests=100, noise_sigma=10, clip: bool = True):
+        correct_retrievals = 0
+        descript = f"Calculating accuracy for sigma {noise_sigma}"
+
+        for embedding, action in tqdm(embeddings_actions, desc=descript):
+            similar_actions = self.db.find_similar_actions(embedding, n_results=1)
+
+            # TODO maybe include reranking for this testing
+            chosen_action_sequence = similar_actions[0]['document']
+            retrieved_action = self._extract_action(chosen_action_sequence)
+            
+            # The answer is correct
+            if retrieved_action == action:
+                correct_retrievals += 1
+
+        return correct_retrievals / num_tests
+
+    def get_recall_on_sigmas(self, num_tests=100, test_sigmas=[10]):
+        chunk_paths = []
+        recall_results = []
+
+        for _ in range(num_tests):
+            chunk_paths.append(self._get_random_chunk_path())
+
+        for sigma in test_sigmas:
+            embeddings_actions = self._get_random_embeddings_and_actions(chunk_paths, sigma)
+
+            recall_results.append(self.calc_recall(embeddings_actions=embeddings_actions, num_tests=num_tests, noise_sigma=sigma))
+
+        return recall_results
 
 def test_embedding_noise():
     embedding_test = EmbeddingNoise()
@@ -256,5 +300,16 @@ def test_embedding_noise():
     embedding_test.save_recall_csv(recall_results, test_sigmas)
     embedding_test.plot_recall(recall_results, test_sigmas)
 
+def test_frame_noise():
+    frame_test = FrameNoise()
+    test_sigmas = [0, 0.001, 0.01, 0.1, 1, 10, 100]
+    recall_results = []
+    
+    recall_results = frame_test.get_recall_on_sigmas(num_tests=1000, test_sigmas=test_sigmas)
+
+    #frame_test.save_recall_csv(recall_results, test_sigmas)
+    frame_test.plot_recall(recall_results, test_sigmas)
+
 if __name__ == "__main__":
-    test_embedding_noise()
+    #test_embedding_noise()
+    test_frame_noise()

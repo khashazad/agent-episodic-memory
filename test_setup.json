@@ -4,6 +4,6 @@
     "test_runs": 5,
     "max_frames": 500,
     "use_max_frames": true,
-    "embedding_method": "no_rag",
-    "use_rag": false
+    "embedding_method": "video_only",
+    "use_rag": true
 }

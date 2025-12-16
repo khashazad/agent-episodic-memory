@@ -121,7 +121,7 @@ system_msg = SystemMessage(
         "- If you attacked as the last option and the log did not break you know something is not right."
         "- You should never need to attack twice in a row."
         "- Once wood is destroyed, it still needs to be picked up by walking over the fallen wood."
-        "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK. If you attack when you're not near a tree, you will be in trouble."
+        "- Make sure to jump if you are stuck!!!"
         "\n"
         "Tool usage:\n"
         "- On each turn, you MUST respond ONLY by calling the `step_env` tool.\n"
@@ -141,6 +141,16 @@ system_msg = SystemMessage(
         f"Input image: [{example_image_2}]\n"
         f"Taken action: {example_action_2}\n"
         f"The reason for the action: {explanation_2}\n"
+        "\n"
+        "EXAMPLE 3:\n"
+        f"Input image: [{example_image_3}]\n"
+        f"Taken action: {example_action_3}\n"
+        f"The reason for the action: {explanation_3}\n"
+        "\n"
+        "EXAMPLE 4:\n"
+        f"Input image: [{example_image_4}]\n"
+        f"Taken action: {example_action_4}\n"
+        f"The reason for the action: {explanation_4}\n"
     )
 )
 
