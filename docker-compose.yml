@@ -46,6 +46,36 @@ services:
       # chromadb:
         # condition: service_healthy
 
+  # Multi-environment server (supports multiple concurrent agents)
+  minerl-multi-env:
+    platform: linux/amd64
+    build:
+      context: ./EnvServer
+      dockerfile: Dockerfile.multi
+    container_name: minecraft-multi-env
+    mem_limit: 16g
+    memswap_limit: 16g
+    shm_size: 4g
+    ports:
+      - "5002:5000"
+    environment:
+      - DISPLAY=:99
+      - JAVA_OPTS=-Xmx6G -Xms2G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap
+      - _JAVA_OPTIONS=-Xmx6G -Xms2G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true
+      - MALLOC_ARENA_MAX=4
+      - INACTIVITY_TIMEOUT=300
+      - CLEANUP_INTERVAL=60
+    ulimits:
+      core: 0
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - agent-network
+
 networks:
   agent-network:
     driver: bridge

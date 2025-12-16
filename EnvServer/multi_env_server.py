@@ -5,7 +5,6 @@ Includes automatic cleanup of inactive environments.
 """
 
 import gym
-import minerl
 from flask import Flask, jsonify, request
 import numpy as np
 from PIL import Image
@@ -14,13 +13,14 @@ import base64
 import uuid
 import threading
 import time
+import os
 from datetime import datetime
 
 app = Flask(__name__)
 
-# Configuration
-INACTIVITY_TIMEOUT = 300  # 5 minutes in seconds
-CLEANUP_INTERVAL = 60  # Check for inactive envs every 60 seconds
+# Configuration (can be set via environment variables)
+INACTIVITY_TIMEOUT = int(os.environ.get("INACTIVITY_TIMEOUT", "300"))  # 5 minutes default
+CLEANUP_INTERVAL = int(os.environ.get("CLEANUP_INTERVAL", "60"))  # 60 seconds default
 
 # Thread-safe storage for environments
 environments = {}  # {env_id: {"env": gym_env, "last_activity": timestamp}}
