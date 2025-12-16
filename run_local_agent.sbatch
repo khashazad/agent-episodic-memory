@@ -11,6 +11,22 @@
 #SBATCH --mail-user=khashayar1924@gmail.com
 
 # =============================================================================
+# Load environment variables from .env file (if it exists)
+# =============================================================================
+# This will automatically export all variables from .env
+# Variables in .env will override any defaults set below
+if [ -f .env ]; then
+    echo "Loading environment variables from .env file..."
+    set -a  # Automatically export all variables
+    source .env
+    set +a  # Turn off automatic export
+    echo "Environment variables loaded successfully."
+else
+    echo "No .env file found. Using defaults or variables set in environment."
+fi
+echo ""
+
+# =============================================================================
 # Local Agent Configuration
 # =============================================================================
 
