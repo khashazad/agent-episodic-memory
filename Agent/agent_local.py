@@ -331,7 +331,8 @@ def submit_action(action_dict: dict):
             action_body["camera"] = [actual_pitch_delta, yaw_delta]
         else:
             if action not in action_body:
-                raise ValueError(f"Unknown action name: {action}")
+                print(f"Warning: Ignoring unknown action name: {action}")
+                continue
             action_body[action] = int(value)
 
     body = {"actions": action_body}
