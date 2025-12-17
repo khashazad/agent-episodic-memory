@@ -549,14 +549,32 @@ def run_agent_episode(agent, obs):
             if tool_name == "step_env":
                 raw_args = tool_call.get("args") if isinstance(tool_call, dict) else tool_call.args
 
-                if "action" not in raw_args:
+                # Handle case where raw_args is not a dict
+                if not isinstance(raw_args, dict):
+                    print(f"Warning: Tool call args is not a dict: {raw_args}. Using default action.")
+                    raw_args = {"action": {"camera": [0, 15]}}
+                elif "action" not in raw_args:
                     raw_args = {"action": raw_args}
 
-                result = step_env.invoke(raw_args)
-                obs = result["obs"]
-                reward = result["reward"]
-                done = result["done"]
-                action_executed = True
+                # Validate that action is a dictionary
+                action_value = raw_args.get("action")
+                if not isinstance(action_value, dict):
+                    print(f"Warning: action is not a dict: {action_value}. Using default action.")
+                    raw_args = {"action": {"camera": [0, 15]}}
+
+                try:
+                    result = step_env.invoke(raw_args)
+                    obs = result["obs"]
+                    reward = result["reward"]
+                    done = result["done"]
+                    action_executed = True
+                except Exception as e:
+                    print(f"Warning: Tool invocation failed: {e}. Using default action.")
+                    result = step_env.invoke({"action": {"camera": [0, 15]}})
+                    obs = result["obs"]
+                    reward = result["reward"]
+                    done = result["done"]
+                    action_executed = True
 
     # Fallback for local models: parse action from text output
     if not action_executed and not USE_OPENAI_LLM:
