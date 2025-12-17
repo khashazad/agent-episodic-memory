@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from RAG_server import RAG
+from tqdm import tqdm 
 
 # Load environment variables from .env file
 load_dotenv()
@@ -128,7 +129,7 @@ system_msg = SystemMessage(
         "- If you attacked as the last option and the log did not break you know something is not right."
         "- You should never need to attack twice in a row."
         "- Once wood is destroyed, it still needs to be picked up by walking over the fallen wood."
-        "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK. If you attack when you're not near a tree, you will be in trouble."
+        "- Make sure to jump if you are stuck!!!"
         "\n"
         "Tool usage:\n"
         "- On each turn, you MUST respond ONLY by calling the `step_env` tool.\n"
@@ -148,6 +149,16 @@ system_msg = SystemMessage(
         f"Input image: [{example_image_2}]\n"
         f"Taken action: {example_action_2}\n"
         f"The reason for the action: {explanation_2}\n"
+        "\n"
+        "EXAMPLE 3:\n"
+        f"Input image: [{example_image_3}]\n"
+        f"Taken action: {example_action_3}\n"
+        f"The reason for the action: {explanation_3}\n"
+        "\n"
+        "EXAMPLE 4:\n"
+        f"Input image: [{example_image_4}]\n"
+        f"Taken action: {example_action_4}\n"
+        f"The reason for the action: {explanation_4}\n"
     )
 )
 
@@ -486,7 +497,17 @@ def run_agent_episode(agent, obs):
                 if "action" not in raw_args:
                     raw_args = {"action": raw_args}
 
-                result = step_env.invoke(raw_args)
+                request_complete = False
+                
+                while not request_complete:
+                    try:
+                        result = step_env.invoke(raw_args)
+                    except Exception as e:
+                        print('Hit rate limit. Retrying.')
+                        time.sleep(3)
+                    else:
+                        request_complete = True
+
                 obs = result["obs"]
                 reward = result["reward"]
                 done = result["done"]
@@ -535,6 +556,10 @@ def run_agent():
     cur_frames = 0
 
     for _ in range(test_setup['test_runs']):
+        # Start progress
+        if test_setup['use_max_frames']:
+            pbar = tqdm(total=max_frames)
+
         while not done:
             # What mode to run in
             if test_setup['agent_mode']:
@@ -550,13 +575,17 @@ def run_agent():
             if test_setup['render']:
                 show_obs(obs)
 
-            cur_frames += 1
-            print(f'Frame {cur_frames}')
+            if test_setup['use_max_frames']:
+                cur_frames += 1
+                
+                tqdm.write(f"Step {cur_frames} done")
+                pbar.update(1)
 
-            # the model isn't doing anything
-            if test_setup['use_max_frames'] and cur_frames >= max_frames:
-                cur_frames = 0
-                break
+                # the model isn't doing anything
+                if cur_frames >= max_frames:
+                    cur_frames = 0
+                    pbar.close()
+                    break
 
         # Saving the results of that run
         log_result(wood_count)
