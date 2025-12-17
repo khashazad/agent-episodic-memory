@@ -32,6 +32,15 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
+# Load example images for visual training examples
+try:
+    with open('example_images.json', 'r') as f:
+        example_images = json.load(f)
+    EXAMPLE_IMAGES_AVAILABLE = True
+except Exception:
+    example_images = None
+    EXAMPLE_IMAGES_AVAILABLE = False
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -136,9 +145,57 @@ if USE_RAG:
 # System prompt for the agent
 # =============================================================================
 
+def build_openai_system_prompt():
+    """Build the system prompt for OpenAI models with visual training examples."""
+    base_prompt = OPENAI_SYSTEM_PROMPT
+
+    # If example images are available, add visual training examples
+    if EXAMPLE_IMAGES_AVAILABLE and example_images:
+        example_image_1 = "data:image/png;base64," + example_images["example_1"]
+        example_image_2 = "data:image/png;base64," + example_images["example_2"]
+        example_image_3 = "data:image/png;base64," + example_images["example_3"]
+        example_image_4 = "data:image/png;base64," + example_images["example_4"]
+
+        example_action_1 = {"forward": 1}
+        example_action_2 = {"attack": 1}
+        example_action_3 = {"camera": [0, -30]}
+        example_action_4 = {"camera": [30, 0]}
+
+        explanation_1 = "The agent saw the tree (object in white) in the distance and started moving towards it."
+        explanation_2 = "The agent is now at the tree. It continuously attacks the tree until the block is gone. Once the block is broken the reward is given."
+        explanation_3 = "The agent can only see dirt. There is nothing useful here and it should not be attacked. The agent should look around to find trees."
+        explanation_4 = "The agent just destroyed wood. To collect more the viewpoint needs to be changed. The agent can look up or down."
+
+        training_examples = (
+            "\n\nTraining examples:\n"
+            "\n"
+            "EXAMPLE 1:\n"
+            f"Input image: [{example_image_1}]\n"
+            f"Taken action: {example_action_1}\n"
+            f"The reason for the action: {explanation_1}\n"
+            "\n"
+            "EXAMPLE 2:\n"
+            f"Input image: [{example_image_2}]\n"
+            f"Taken action: {example_action_2}\n"
+            f"The reason for the action: {explanation_2}\n"
+            "\n"
+            "EXAMPLE 3:\n"
+            f"Input image: [{example_image_3}]\n"
+            f"Taken action: {example_action_3}\n"
+            f"The reason for the action: {explanation_3}\n"
+            "\n"
+            "EXAMPLE 4:\n"
+            f"Input image: [{example_image_4}]\n"
+            f"Taken action: {example_action_4}\n"
+            f"The reason for the action: {explanation_4}\n"
+        )
+        return base_prompt + training_examples
+
+    return base_prompt
+
 # Select the appropriate system prompt based on LLM type
 if USE_OPENAI_LLM:
-    system_msg = SystemMessage(content=OPENAI_SYSTEM_PROMPT)
+    system_msg = SystemMessage(content=build_openai_system_prompt())
 else:
     system_msg = SystemMessage(content=LOCAL_SYSTEM_PROMPT)
 
