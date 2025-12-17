@@ -47,7 +47,10 @@ class RAGBase(ABC):
 
     def _init_database(self) -> ChromaClient:
         """Initialize the database connection."""
-        db = ChromaClient(collection_name=self.collection_name)
+        host = os.getenv("CHROMA_HOST", "localhost")
+        port = int(os.getenv("CHROMA_PORT", "8000"))
+
+        db = ChromaClient(host=host, port=port, collection_name=self.collection_name)
 
         if not db.connect():
             raise ConnectionError(f"Failed to connect to Chroma collection: {self.collection_name}")
