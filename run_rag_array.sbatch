@@ -8,7 +8,7 @@
 #SBATCH --mem=32GB
 #SBATCH --gres=gpu:rtx_a2000:1
 #SBATCH --array=0-2
-#SBATCH --mail-type=ALL
+#SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=khashayar1924@gmail.com
 
 # =============================================================================

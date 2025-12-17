@@ -18,7 +18,6 @@ Environment Variables:
 from langchain.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage
 import subprocess
-import sys
 import time
 import requests
 import base64
@@ -39,54 +38,25 @@ load_dotenv()
 # Check which LLM to use
 USE_OPENAI_LLM = os.environ.get("USE_OPENAI_LLM", "false").lower() == "true"
 
-# Import OpenAI dependencies if needed
+# Import model setup utilities
+from utils.constants import (
+    OPENAI_SYSTEM_PROMPT,
+    LOCAL_SYSTEM_PROMPT,
+    MINERL_ACTION_TEMPLATE,
+    PITCH_MIN,
+    PITCH_MAX,
+)
+
 if USE_OPENAI_LLM:
-    try:
-        from langchain_openai import ChatOpenAI
-        OPENAI_AVAILABLE = True
-    except ImportError as e:
-        raise ImportError(
-            "OpenAI mode requires langchain-openai. "
-            "Install with: pip install langchain-openai"
-        ) from e
-
-    # Get OpenAI API key
-    try:
-        with open('config.json', 'r') as f:
-            config = json.load(f)
-        openai_key = config.get('OPENAI_API_KEY')
-    except Exception:
-        openai_key = None
-
-    if not openai_key:
-        openai_key = os.environ.get("OPENAI_API_KEY")
-
-    if not openai_key:
-        raise ValueError("OPENAI_API_KEY not found (required when USE_OPENAI_LLM=true)")
-
-    os.environ["OPENAI_API_KEY"] = openai_key
-    HF_AVAILABLE = False  # Not needed
+    from utils.openai_model import setup_openai_agent, ensure_openai_api_key
+    # Ensure API key is set up early
+    ensure_openai_api_key()
 else:
-    OPENAI_AVAILABLE = False
-    # Enable HuggingFace progress bars and ensure output is unbuffered
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # Faster downloads
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer warnings
-
-    # Import HuggingFace dependencies
-    try:
-        from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
-        from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel, AutoConfig, pipeline
-        import torch
-        HF_AVAILABLE = True
-    except ImportError as e:
-        raise ImportError(
-            "This agent requires langchain-huggingface and transformers. "
-            "Install with: pip install langchain-huggingface transformers torch"
-        ) from e
+    from utils.local_model import setup_local_agent
 
 # Import RAG system (optional)
 try:
-    from RAG_server import RAG, create_rag
+    from RAG_server import create_rag
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
@@ -146,17 +116,6 @@ ACTION_HISTORY = deque(maxlen=5)
 FRAME_HISTORY = deque(maxlen=16)
 
 CAMERA_STATE = {"pitch": 0.0, "yaw": 0.0}
-PITCH_MIN, PITCH_MAX = -60.0, 60.0
-
-MINERL_ACTION_TEMPLATE = {
-    "attack": 0,
-    "back": 0,
-    "camera": [0.0, 0.0],   # pitch, yaw
-    "forward": 0,
-    "jump": 0,
-    "left": 0,
-    "right": 0,
-}
 
 # For rendering the frames
 _RENDER = {
@@ -177,91 +136,11 @@ if USE_RAG:
 # System prompt for the agent
 # =============================================================================
 
-# Different system prompts for OpenAI (tool-based) vs local (JSON-based) models
+# Select the appropriate system prompt based on LLM type
 if USE_OPENAI_LLM:
-    system_msg = SystemMessage(
-        content=(
-            "You are a Minecraft-playing agent in a 3D world.\n"
-            "\n"
-            "Available controls:\n"
-            "- Movement: forward, back, left, right, jump\n"
-            "- Camera: camera (pitch, yaw)\n"
-            "- Breaking blocks: attack\n"
-            "\n"
-            "Your goal is to collect as much wood as possible. To do this, you must:\n"
-            "1) Use camera to look around until you can see a tree.\n"
-            "2) Use forward/left/right/back/jump to walk up to the tree.\n"
-            "3) When close enough and looking at the trunk, use attack.\n"
-            "\n"
-            "Very important behavior guidelines:\n"
-            "- Do NOT only use forward and attack. Use camera to turn and explore.\n"
-            "- Use left/right/back/jump to navigate around obstacles or adjust position.\n"
-            "- Prefer using camera at the start of an episode or when you see no tree.\n"
-            "- If you seem stuck, adjust camera and position.\n"
-            "- When attack is triggered, attack will be performed enough times to break the block automatically.\n"
-            "- If you attack and no reward is given, you were not close enough to the tree.\n"
-            "- The tree block must also be in the centre of the frame. You might have to adjust the camera so this is true.\n"
-            "- If you attacked as the last option and the log did not break you know something is not right.\n"
-            "- You should never need to attack twice in a row.\n"
-            "- Once wood is destroyed, it still needs to be picked up by walking over the fallen wood.\n"
-            "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK.\n"
-            "\n"
-            "Tool usage:\n"
-            "- On each turn, you MUST respond ONLY by calling the `step_env` tool.\n"
-            "- The tool takes a single argument: a dict named `action`.\n"
-            "  * Keys: \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\".\n"
-            "  * Movement/attack: 0 or 1.\n"
-            "  * Camera: [pitch_delta, yaw_delta].\n"
-            "\n"
-            "Examples:\n"
-            "  step_env(action={\"forward\": 1})\n"
-            "  step_env(action={\"camera\": [0, 15]})\n"
-            "  step_env(action={\"forward\": 1, \"camera\": [0, 10]})\n"
-        )
-    )
+    system_msg = SystemMessage(content=OPENAI_SYSTEM_PROMPT)
 else:
-    system_msg = SystemMessage(
-        content=(
-            "You are a Minecraft-playing agent in a 3D world.\n"
-            "\n"
-            "Available controls:\n"
-            "- Movement: forward, back, left, right, jump\n"
-            "- Camera: camera (pitch, yaw)\n"
-            "- Breaking blocks: attack\n"
-            "\n"
-            "Your goal is to collect as much wood as possible. To do this, you must:\n"
-            "1) Use camera to look around until you can see a tree.\n"
-            "2) Use forward/left/right/back/jump to walk up to the tree.\n"
-            "3) When close enough and looking at the trunk, use attack.\n"
-            "\n"
-            "Very important behavior guidelines:\n"
-            "- Do NOT only use forward and attack. Use camera to turn and explore.\n"
-            "- Use left/right/back/jump to navigate around obstacles or adjust position.\n"
-            "- Prefer using camera at the start of an episode or when you see no tree.\n"
-            "- If you seem stuck, adjust camera and position.\n"
-            "- When attack is triggered, attack will be performed enough times to break the block automatically.\n"
-            "- If you attack and no reward is given, you were not close enough to the tree.\n"
-            "- The tree block must also be in the centre of the frame. You might have to adjust the camera so this is true.\n"
-            "- If you attacked as the last option and the log did not break you know something is not right.\n"
-            "- You should never need to attack twice in a row.\n"
-            "- Once wood is destroyed, it still needs to be picked up by walking over the fallen wood.\n"
-            "- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK.\n"
-            "\n"
-            "Response format:\n"
-            "You MUST respond with a JSON action dictionary on a single line.\n"
-            "Valid keys: \"forward\", \"back\", \"left\", \"right\", \"jump\", \"attack\", \"camera\"\n"
-            "Movement/attack values: 0 or 1\n"
-            "Camera value: [pitch_delta, yaw_delta]\n"
-            "\n"
-            "Examples of valid responses:\n"
-            '{"forward": 1}\n'
-            '{"attack": 1}\n'
-            '{"camera": [0, 15]}\n'
-            '{"forward": 1, "camera": [0, 10]}\n'
-            "\n"
-            "Respond ONLY with the JSON action, no explanation needed.\n"
-        )
-    )
+    system_msg = SystemMessage(content=LOCAL_SYSTEM_PROMPT)
 
 container_started = False
 
@@ -510,210 +389,6 @@ def step_env(action: dict) -> dict:
 
 
 # =============================================================================
-# Local LLM setup
-# =============================================================================
-
-def setup_local_agent():
-    """Setup local Hugging Face model-based agent."""
-    print(f"\nLoading local model: {LOCAL_MODEL_NAME}")
-    print(f"Configured device: {LOCAL_MODEL_DEVICE}")
-    sys.stdout.flush()
-
-    # Determine the device
-    if LOCAL_MODEL_DEVICE == 'auto':
-        if torch.cuda.is_available():
-            device = 'cuda'
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            device = 'mps'
-        else:
-            device = 'cpu'
-    else:
-        device = LOCAL_MODEL_DEVICE
-
-    print(f"Using device: {device}")
-
-    # Determine dtype
-    dtype_map = {
-        'float16': torch.float16,
-        'float32': torch.float32,
-        'bfloat16': torch.bfloat16,
-    }
-    torch_dtype = dtype_map.get(LOCAL_MODEL_DTYPE, torch.float16)
-    if device == 'cpu':
-        torch_dtype = torch.float32  # CPU typically needs float32
-
-    print(f"Using dtype: {torch_dtype}")
-    sys.stdout.flush()
-
-    # Load tokenizer with progress indication
-    print("\n[1/5] Loading tokenizer...")
-    sys.stdout.flush()
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_MODEL_NAME,
-            trust_remote_code=True,
-            resume_download=True,
-        )
-        print("✓ Tokenizer loaded successfully")
-        sys.stdout.flush()
-    except Exception as e:
-        print(f"✗ Failed to load tokenizer: {e}")
-        sys.stdout.flush()
-        raise
-
-    # Set device_map for automatic device placement
-    device_map = "auto" if device in ['cuda', 'mps'] else None
-
-    # Check if this is a vision-language model by inspecting the config
-    print("\n[2/5] Loading model configuration...")
-    sys.stdout.flush()
-    try:
-        config = AutoConfig.from_pretrained(
-            LOCAL_MODEL_NAME,
-            trust_remote_code=True,
-            resume_download=True,
-        )
-        config_class_name = config.__class__.__name__
-        print(f"✓ Config loaded: {config_class_name}")
-        sys.stdout.flush()
-
-        # Vision-language models typically have "VL" in their config name
-        # or are not supported by AutoModelForCausalLM
-        is_vision_language = (
-            'VL' in config_class_name or
-            'Vision' in config_class_name or
-            'Multimodal' in config_class_name
-        )
-
-        print("\n[3/5] Loading model weights (this may take several minutes)...")
-        print("      If this is the first time, the model will be downloaded from HuggingFace.")
-        print("      Large models can take 5-15 minutes to download depending on network speed.")
-        print("      Progress bars should appear below if downloading...")
-        sys.stdout.flush()
-
-        if is_vision_language:
-            print(f"      Detected vision-language model ({config_class_name}), using AutoModel")
-            sys.stdout.flush()
-            model = AutoModel.from_pretrained(
-                LOCAL_MODEL_NAME,
-                dtype=torch_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-                resume_download=True,
-                low_cpu_mem_usage=True,
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                LOCAL_MODEL_NAME,
-                dtype=torch_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-                resume_download=True,
-                low_cpu_mem_usage=True,
-            )
-        print("✓ Model weights loaded successfully")
-        sys.stdout.flush()
-    except Exception as e:
-        # Fallback: try AutoModelForCausalLM first, then AutoModel if it fails
-        print(f"✗ Config check failed ({e}), trying fallback loading methods...")
-        print("\n[3/5] Attempting to load with AutoModelForCausalLM...")
-        sys.stdout.flush()
-        try:
-            model = AutoModelForCausalLM.from_pretrained(
-                LOCAL_MODEL_NAME,
-                dtype=torch_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-                resume_download=True,
-                low_cpu_mem_usage=True,
-            )
-            print("✓ Model loaded with AutoModelForCausalLM")
-            sys.stdout.flush()
-        except ValueError as ve:
-            print(f"✗ AutoModelForCausalLM failed: {ve}")
-            print("   Trying AutoModel...")
-            sys.stdout.flush()
-            model = AutoModel.from_pretrained(
-                LOCAL_MODEL_NAME,
-                dtype=torch_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-                resume_download=True,
-                low_cpu_mem_usage=True,
-            )
-            print("✓ Model loaded with AutoModel")
-            sys.stdout.flush()
-        except Exception as e2:
-            print(f"✗ Failed to load model: {e2}")
-            sys.stdout.flush()
-            raise
-
-    # Move to device if not using device_map
-    if device_map is None:
-        print(f"\n[4/5] Moving model to {device}...")
-        sys.stdout.flush()
-        model = model.to(device)
-        print(f"✓ Model moved to {device}")
-        sys.stdout.flush()
-
-    # Create the text generation pipeline
-    print("\n[5/5] Creating text generation pipeline...")
-    sys.stdout.flush()
-    try:
-        pipe = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            max_new_tokens=LOCAL_MODEL_MAX_NEW_TOKENS,
-            do_sample=True,
-            temperature=LOCAL_MODEL_TEMPERATURE,
-            top_p=0.9,
-            return_full_text=False,
-        )
-        print("✓ Pipeline created successfully")
-        sys.stdout.flush()
-    except Exception as e:
-        print(f"✗ Failed to create pipeline: {e}")
-        sys.stdout.flush()
-        raise
-
-    # Wrap in LangChain's HuggingFacePipeline
-    print("\nWrapping in LangChain interface...")
-    sys.stdout.flush()
-    try:
-        hf_llm = HuggingFacePipeline(pipeline=pipe)
-        chat_model = ChatHuggingFace(llm=hf_llm)
-        print("✓ LangChain wrapper created successfully")
-        sys.stdout.flush()
-    except Exception as e:
-        print(f"✗ Failed to create LangChain wrapper: {e}")
-        sys.stdout.flush()
-        raise
-
-    print(f"\n{'='*50}")
-    print(f"Local model {LOCAL_MODEL_NAME} loaded successfully!")
-    print(f"{'='*50}\n")
-    sys.stdout.flush()
-    return chat_model
-
-
-def setup_openai_agent():
-    """Setup OpenAI model-based agent with tool binding."""
-    print(f"\nSetting up OpenAI agent with model: {OPENAI_MODEL_NAME}")
-    sys.stdout.flush()
-
-    llm = ChatOpenAI(
-        model=OPENAI_MODEL_NAME,
-        temperature=OPENAI_TEMPERATURE
-    )
-    llm_with_tools = llm.bind_tools([step_env])
-
-    print("OpenAI agent ready!")
-    sys.stdout.flush()
-    return llm_with_tools
-
-
-# =============================================================================
 # Action parsing
 # =============================================================================
 
@@ -928,7 +603,7 @@ def run_agent():
     # Setup the agent based on configuration
     if USE_OPENAI_LLM:
         print("Setting up OpenAI LLM agent...")
-        agent = setup_openai_agent()
+        agent = setup_openai_agent(tools=[step_env])
     else:
         print("Setting up local LLM agent...")
         agent = setup_local_agent()
