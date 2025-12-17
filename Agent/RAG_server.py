@@ -219,7 +219,7 @@ class RAGActionBased(RAGBase):
         action_dict = self._get_last_action(action_descriptions)
         action_str = self._summarize_action(action_dict)
 
-        print(f"\t\tAction string: {action_str}")
+        print(f"\tAction string: {action_str}")
 
         return (
             "Similar past situation from episodic memory:\n"

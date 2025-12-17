@@ -508,13 +508,6 @@ def format_user_msg(context: str, memory_str: str | None = None, obs: str | None
 
     memory_block = memory_str or "No relevant episodic memory was retrieved for this state."
 
-    # Print the prompt addition that will be added to the user message
-    print("\n" + "-"*80)
-    print("PROMPT ADDITION (Episodic Memory Section):")
-    print("-"*80)
-    print(memory_block)
-    print("-"*80 + "\n")
-
     camera_info = (
         f"Estimated camera pitch: {CAMERA_STATE['pitch']:.1f} degrees "
         "(0 = horizon; positive = down, negative = up).\n"
@@ -579,11 +572,6 @@ def run_agent_episode(agent, obs):
     memory_str = "No episodic memory yet (not enough frames)."
     if USE_RAG and rag and len(FRAME_HISTORY) == 16:
         memory_str = rag.get_action(FRAME_HISTORY)
-        print("\n" + "="*80)
-        print("RAG SYSTEM PROMPT ADDITION:")
-        print("="*80)
-        print(f"Retrieved memory from RAG system:\n{memory_str}")
-        print("="*80 + "\n")
 
     context = ""
     user_msg = format_user_msg(context, memory_str=memory_str, obs=obs)
