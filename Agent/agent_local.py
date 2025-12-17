@@ -50,7 +50,7 @@ except ImportError as e:
 
 # Import RAG system (optional)
 try:
-    from RAG_server import RAG
+    from RAG_server import RAG, create_rag
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
@@ -68,6 +68,7 @@ LOCAL_MODEL_DTYPE = os.environ.get("LOCAL_MODEL_DTYPE", "float16")  # 'float16',
 
 # Agent configuration
 USE_RAG = os.environ.get("USE_RAG", "false").lower() == "true"
+RAG_CONFIG = os.environ.get("RAG_CONFIG", "v1")  # v1, v2, or v3
 RENDER = os.environ.get("RENDER", "false").lower() == "true"
 TEST_RUNS = int(os.environ.get("TEST_RUNS", "5"))
 MAX_FRAMES = int(os.environ.get("MAX_FRAMES", "500"))
@@ -85,6 +86,7 @@ print(f"  Device: {LOCAL_MODEL_DEVICE}")
 print(f"  Max New Tokens: {LOCAL_MODEL_MAX_NEW_TOKENS}")
 print(f"  Temperature: {LOCAL_MODEL_TEMPERATURE}")
 print(f"  Use RAG: {USE_RAG}")
+print(f"  RAG Config: {RAG_CONFIG}")
 print(f"  Render: {RENDER}")
 print(f"  Test Runs: {TEST_RUNS}")
 print(f"  Max Frames: {MAX_FRAMES}")
@@ -122,7 +124,7 @@ _RENDER = {
 rag = None
 if USE_RAG:
     if RAG_AVAILABLE:
-        rag = RAG()
+        rag = create_rag(RAG_CONFIG)
     else:
         print("Warning: RAG requested but RAG_server not available")
 

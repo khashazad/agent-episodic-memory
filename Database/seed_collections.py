@@ -167,6 +167,8 @@ class MultiCollectionSeeder:
                     item_id = row.get('id', f"item_{processed_count}")
 
                     # Extract metadata fields
+                    # Note: ChromaDB only accepts str, int, float, bool, SparseVector, or None
+                    # Lists and dicts must be JSON-encoded as strings
                     metadata = {}
                     if row.get('episode'):
                         metadata['episode'] = row['episode']
@@ -176,15 +178,23 @@ class MultiCollectionSeeder:
                         except (ValueError, TypeError):
                             metadata['chunk_index'] = row['chunk_index']
                     if row.get('frame_range'):
-                        try:
-                            metadata['frame_range'] = json.loads(row['frame_range'])
-                        except (json.JSONDecodeError, TypeError):
-                            metadata['frame_range'] = row['frame_range']
+                        # Keep as string - don't parse JSON since ChromaDB requires strings
+                        # If it's already a list/dict (shouldn't happen from CSV), convert to JSON string
+                        frame_range_val = row['frame_range']
+                        if isinstance(frame_range_val, (list, dict)):
+                            metadata['frame_range'] = json.dumps(frame_range_val)
+                        else:
+                            # CSV always gives strings, so keep as string
+                            metadata['frame_range'] = str(frame_range_val)
                     if row.get('action_summary'):
-                        try:
-                            metadata['action_summary'] = json.loads(row['action_summary'])
-                        except (json.JSONDecodeError, TypeError):
-                            metadata['action_summary'] = row['action_summary']
+                        # Keep as string - don't parse JSON since ChromaDB requires strings
+                        # If it's already a list/dict (shouldn't happen from CSV), convert to JSON string
+                        action_summary_val = row['action_summary']
+                        if isinstance(action_summary_val, (list, dict)):
+                            metadata['action_summary'] = json.dumps(action_summary_val)
+                        else:
+                            # CSV always gives strings, so keep as string
+                            metadata['action_summary'] = str(action_summary_val)
                     if row.get('action_descriptions'):
                         metadata['action_descriptions'] = row['action_descriptions']
                     if row.get('metadata_path'):
@@ -572,49 +582,37 @@ def main():
     parser.add_argument(
         "--collection-1",
         type=str,
-        default="episodic_memory_actions",
-        help="Collection name for action descriptions"
+        default="episodic_memory_v1",
+        help="Collection name for action descriptions (dataset mode) or first CSV collection (CSV mode)"
     )
     parser.add_argument(
         "--collection-2",
         type=str,
-        default="episodic_memory_llm",
-        help="Collection name for LLM-derived descriptions"
+        default="episodic_memory_v2",
+        help="Collection name for LLM-derived descriptions (dataset mode) or second CSV collection (CSV mode)"
     )
     parser.add_argument(
         "--collection-3",
         type=str,
-        default="chroma-data-v2",
-        help="Collection name for chroma-data-v2 (LLM descriptions with metadata)"
+        default="episodic_memory_v3",
+        help="Collection name for chroma-data-v2 (LLM descriptions with metadata) - dataset mode only"
     )
     parser.add_argument(
         "--csv-v1",
         type=str,
-        default="./data/chroma-data-v1.csv",
+        default=".data/chroma-data-v1.csv",
         help="Path to first CSV file (chroma-data-v1.csv) - used if --dataset-dir not provided"
     )
     parser.add_argument(
         "--csv-v2",
         type=str,
-        default="./data/chroma-data-v2.csv",
+        default=".data/chroma-data-v2.csv",
         help="Path to second CSV file (chroma-data-v2.csv) - used if --dataset-dir not provided"
-    )
-    parser.add_argument(
-        "--collection-v1",
-        type=str,
-        default="episodic_memory_v1",
-        help="Collection name for v1 CSV data"
-    )
-    parser.add_argument(
-        "--collection-v2",
-        type=str,
-        default="episodic_memory_v2",
-        help="Collection name for v2 CSV data"
     )
     parser.add_argument(
         "--chroma-host",
         type=str,
-        default=os.getenv("CHROMA_HOST", "chromadb"),
+        default=os.getenv("CHROMA_HOST", "0.0.0.0"),
         help="ChromaDB host"
     )
     parser.add_argument(
@@ -663,74 +661,74 @@ def main():
     try:
         # Seed from dataset directory if provided, otherwise use CSV files
         if args.dataset_dir:
-        dataset_path = Path(args.dataset_dir)
-        if not dataset_path.exists():
-            logger.error(f"Dataset directory not found: {dataset_path}")
-            sys.exit(1)
+            dataset_path = Path(args.dataset_dir)
+            if not dataset_path.exists():
+                logger.error(f"Dataset directory not found: {dataset_path}")
+                sys.exit(1)
 
-        logger.info("Seeding from dataset directory...")
-        logger.info(f"  Collection 1 ({args.collection_1}): Action descriptions")
-        logger.info(f"  Collection 2 ({args.collection_2}): LLM-derived descriptions")
-        logger.info(f"  Collection 3 ({args.collection_3}): chroma-data-v2")
+            logger.info("Seeding from dataset directory...")
+            logger.info(f"  Collection 1 ({args.collection_1}): Action descriptions")
+            logger.info(f"  Collection 2 ({args.collection_2}): LLM-derived descriptions")
+            logger.info(f"  Collection 3 ({args.collection_3}): chroma-data-v2")
 
-        try:
-            results = seeder.seed_from_dataset(
-                dataset_dir=dataset_path,
-                collection_names=(args.collection_1, args.collection_2, args.collection_3),
-                batch_size=args.batch_size,
-                reset=args.reset
-            )
-        except Exception as e:
-            logger.error(f"Seeding from dataset failed: {e}")
-            sys.exit(1)
-    else:
-        # Fall back to CSV seeding for backward compatibility
-        logger.info("Seeding from CSV files...")
-        csv_collection_pairs = []
-
-        csv_v1 = Path(args.csv_v1)
-        csv_v2 = Path(args.csv_v2)
-
-        if csv_v1.exists():
-            csv_collection_pairs.append((csv_v1, args.collection_v1))
+            try:
+                results = seeder.seed_from_dataset(
+                    dataset_dir=dataset_path,
+                    collection_names=(args.collection_1, args.collection_2, args.collection_3),
+                    batch_size=args.batch_size,
+                    reset=args.reset
+                )
+            except Exception as e:
+                logger.error(f"Seeding from dataset failed: {e}")
+                sys.exit(1)
         else:
-            logger.warning(f"CSV file not found: {csv_v1}")
+            # Fall back to CSV seeding for backward compatibility
+            logger.info("Seeding from CSV files...")
+            csv_collection_pairs = []
 
-        if csv_v2.exists():
-            csv_collection_pairs.append((csv_v2, args.collection_v2))
-        else:
-            logger.warning(f"CSV file not found: {csv_v2}")
+            csv_v1 = Path(args.csv_v1)
+            csv_v2 = Path(args.csv_v2)
 
-        if not csv_collection_pairs:
-            logger.error("No valid CSV files found and --dataset-dir not provided")
-            sys.exit(1)
+            if csv_v1.exists():
+                csv_collection_pairs.append((csv_v1, args.collection_1))
+            else:
+                logger.warning(f"CSV file not found: {csv_v1}")
 
-        try:
-            results = seeder.seed_all_collections(
-                csv_collection_pairs=csv_collection_pairs,
-                batch_size=args.batch_size,
-                reset=args.reset
-            )
-        except Exception as e:
-            logger.error(f"Seeding from CSV files failed: {e}")
-            sys.exit(1)
+            if csv_v2.exists():
+                csv_collection_pairs.append((csv_v2, args.collection_2))
+            else:
+                logger.warning(f"CSV file not found: {csv_v2}")
 
-    # Print summary
-    logger.info("=" * 50)
-    logger.info("SEEDING SUMMARY")
-    logger.info("=" * 50)
+            if not csv_collection_pairs:
+                logger.error("No valid CSV files found and --dataset-dir not provided")
+                sys.exit(1)
 
-    total_processed = 0
-    total_items = 0
+            try:
+                results = seeder.seed_all_collections(
+                    csv_collection_pairs=csv_collection_pairs,
+                    batch_size=args.batch_size,
+                    reset=args.reset
+                )
+            except Exception as e:
+                logger.error(f"Seeding from CSV files failed: {e}")
+                sys.exit(1)
 
-    for collection_name, (processed, total) in results.items():
-        success_rate = (processed / total * 100) if total > 0 else 0
-        logger.info(f"  {collection_name}: {processed}/{total} ({success_rate:.1f}%)")
-        total_processed += processed
-        total_items += total
+        # Print summary
+        logger.info("=" * 50)
+        logger.info("SEEDING SUMMARY")
+        logger.info("=" * 50)
 
-    logger.info(f"  TOTAL: {total_processed}/{total_items}")
-    logger.info("=" * 50)
+        total_processed = 0
+        total_items = 0
+
+        for collection_name, (processed, total) in results.items():
+            success_rate = (processed / total * 100) if total > 0 else 0
+            logger.info(f"  {collection_name}: {processed}/{total} ({success_rate:.1f}%)")
+            total_processed += processed
+            total_items += total
+
+        logger.info(f"  TOTAL: {total_processed}/{total_items}")
+        logger.info("=" * 50)
 
         # Create seed marker if successful
         if not args.skip_marker and total_processed > 0:

@@ -42,18 +42,23 @@ class ChromaClient:
         return self._connected and self.collection is not None
 
     def find_similar_actions(self, query_embedding: np.ndarray,
-                           n_results: int = 5) -> List[Dict]:
+                           n_results: int = 5,
+                           include_metadata: bool = False) -> List[Dict]:
 
         if not self.is_connected():
             logger.error("Not connected to ChromaDB")
             return []
 
         try:
-            # Prepare query
+            # Prepare query - include metadata if requested
+            include_fields = ["documents", "distances"]
+            if include_metadata:
+                include_fields.append("metadatas")
+
             query_params = {
                 "query_embeddings": [query_embedding.tolist()],
                 "n_results": n_results,
-                "include": ["documents", "distances"]
+                "include": include_fields
             }
 
             results = self.collection.query(**query_params)
@@ -61,11 +66,15 @@ class ChromaClient:
             similar_actions = []
 
             for i in range(len(results["documents"][0])):
-                similar_actions.append({
+                result_entry = {
                     "document": results["documents"][0][i],
                     "distance": results["distances"][0][i],
                     "similarity": 1.0 - results["distances"][0][i]  # Convert distance to similarity
-                })
+                }
+                # Include metadata if requested and available
+                if include_metadata and "metadatas" in results:
+                    result_entry["metadata"] = results["metadatas"][0][i]
+                similar_actions.append(result_entry)
 
             return similar_actions
 

@@ -1,0 +1,17 @@
+{
+  "v1": {
+    "name": "action_based",
+    "collection": "episodic_memory_v1",
+    "description": "Uses last action from action_descriptions metadata"
+  },
+  "v2": {
+    "name": "document_full",
+    "collection": "episodic_memory_v1",
+    "description": "Uses full episode LLM description from document text"
+  },
+  "v3": {
+    "name": "document_chunk",
+    "collection": "episodic_memory_v2",
+    "description": "Uses chunk LLM description from document text"
+  }
+}
