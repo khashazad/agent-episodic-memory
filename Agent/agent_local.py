@@ -1,7 +1,7 @@
 """
 Local HuggingFace Model Agent for MineRL
 
-This agent uses a local HuggingFace model instead of OpenAI's API.
+This agent supports both local HuggingFace models and OpenAI's API.
 Configuration is read from environment variables (see .env.example).
 
 Usage:
@@ -9,6 +9,10 @@ Usage:
 
 Or via sbatch:
     sbatch run_local_agent.sbatch
+
+Environment Variables:
+    USE_OPENAI_LLM: Set to "true" to use OpenAI instead of local model
+    OPENAI_API_KEY: Required if USE_OPENAI_LLM is true
 """
 
 from langchain.tools import tool
@@ -32,21 +36,53 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Enable HuggingFace progress bars and ensure output is unbuffered
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # Faster downloads
-os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer warnings
+# Check which LLM to use
+USE_OPENAI_LLM = os.environ.get("USE_OPENAI_LLM", "false").lower() == "true"
 
-# Import HuggingFace dependencies
-try:
-    from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
-    from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel, AutoConfig, pipeline
-    import torch
-    HF_AVAILABLE = True
-except ImportError as e:
-    raise ImportError(
-        "This agent requires langchain-huggingface and transformers. "
-        "Install with: pip install langchain-huggingface transformers torch"
-    ) from e
+# Import OpenAI dependencies if needed
+if USE_OPENAI_LLM:
+    try:
+        from langchain_openai import ChatOpenAI
+        OPENAI_AVAILABLE = True
+    except ImportError as e:
+        raise ImportError(
+            "OpenAI mode requires langchain-openai. "
+            "Install with: pip install langchain-openai"
+        ) from e
+
+    # Get OpenAI API key
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+        openai_key = config.get('OPENAI_API_KEY')
+    except Exception:
+        openai_key = None
+
+    if not openai_key:
+        openai_key = os.environ.get("OPENAI_API_KEY")
+
+    if not openai_key:
+        raise ValueError("OPENAI_API_KEY not found (required when USE_OPENAI_LLM=true)")
+
+    os.environ["OPENAI_API_KEY"] = openai_key
+    HF_AVAILABLE = False  # Not needed
+else:
+    OPENAI_AVAILABLE = False
+    # Enable HuggingFace progress bars and ensure output is unbuffered
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # Faster downloads
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer warnings
+
+    # Import HuggingFace dependencies
+    try:
+        from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
+        from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel, AutoConfig, pipeline
+        import torch
+        HF_AVAILABLE = True
+    except ImportError as e:
+        raise ImportError(
+            "This agent requires langchain-huggingface and transformers. "
+            "Install with: pip install langchain-huggingface transformers torch"
+        ) from e
 
 # Import RAG system (optional)
 try:
@@ -58,6 +94,10 @@ except ImportError:
 # =============================================================================
 # Configuration from environment variables
 # =============================================================================
+
+# OpenAI LLM configuration
+OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini")
+OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE", "0.2"))
 
 # Local LLM configuration
 LOCAL_MODEL_NAME = os.environ.get("LOCAL_MODEL_NAME", "microsoft/Phi-3-mini-4k-instruct")
@@ -80,11 +120,16 @@ USE_REMOTE_SERVER = os.environ.get("USE_REMOTE_SERVER", "false").lower() == "tru
 SERVER_URL = os.environ.get("MINERL_SERVER_URL", "http://127.0.0.1:5001")
 ENV_ID = None  # Used to identify environment session on remote server
 
-print(f"Configuration:")
-print(f"  Local Model: {LOCAL_MODEL_NAME}")
-print(f"  Device: {LOCAL_MODEL_DEVICE}")
-print(f"  Max New Tokens: {LOCAL_MODEL_MAX_NEW_TOKENS}")
-print(f"  Temperature: {LOCAL_MODEL_TEMPERATURE}")
+print("Configuration:")
+print(f"  Use OpenAI LLM: {USE_OPENAI_LLM}")
+if USE_OPENAI_LLM:
+    print(f"  OpenAI Model: {OPENAI_MODEL_NAME}")
+    print(f"  OpenAI Temperature: {OPENAI_TEMPERATURE}")
+else:
+    print(f"  Local Model: {LOCAL_MODEL_NAME}")
+    print(f"  Device: {LOCAL_MODEL_DEVICE}")
+    print(f"  Max New Tokens: {LOCAL_MODEL_MAX_NEW_TOKENS}")
+    print(f"  Temperature: {LOCAL_MODEL_TEMPERATURE}")
 print(f"  Use RAG: {USE_RAG}")
 print(f"  RAG Config: {RAG_CONFIG}")
 print(f"  Render: {RENDER}")
@@ -609,6 +654,22 @@ def setup_local_agent():
     return chat_model
 
 
+def setup_openai_agent():
+    """Setup OpenAI model-based agent with tool binding."""
+    print(f"\nSetting up OpenAI agent with model: {OPENAI_MODEL_NAME}")
+    sys.stdout.flush()
+
+    llm = ChatOpenAI(
+        model=OPENAI_MODEL_NAME,
+        temperature=OPENAI_TEMPERATURE
+    )
+    llm_with_tools = llm.bind_tools([step_env])
+
+    print("OpenAI agent ready!")
+    sys.stdout.flush()
+    return llm_with_tools
+
+
 # =============================================================================
 # Action parsing
 # =============================================================================
@@ -672,9 +733,17 @@ def format_prev_actions():
     return context
 
 
-def format_user_msg(context: str, memory_str: str | None = None):
+def format_user_msg(context: str, memory_str: str | None = None, obs: str | None = None):
     """
-    Format user message for local models (text-only, no vision).
+    Format user message.
+
+    For OpenAI models: includes vision (image) and uses tool calling.
+    For local models: text-only, expects JSON action response.
+
+    Args:
+        context: Extra context string
+        memory_str: Episodic memory string
+        obs: Base64 encoded observation image (used for OpenAI vision)
     """
     prev_actions = format_prev_actions()
     goal = 'Goal: Collect as much wood as possible.'
@@ -688,18 +757,46 @@ def format_user_msg(context: str, memory_str: str | None = None):
         "deliberately looking up or down briefly.\n"
     )
 
-    user_msg = HumanMessage(
-        content=(
-            "You are in a Minecraft world. Based on your memory and previous actions, "
-            "decide the next action to collect wood.\n\n"
-            f"Extra context:\n{context}\n\n"
-            f"Camera state:\n{camera_info}\n"
-            f"Previous actions:\n{prev_actions}\n\n"
-            f"Episodic memory (similar past situation):\n{memory_block}\n\n"
-            f"Goal: {goal}\n\n"
-            "Respond with ONLY a JSON action dict like: {\"forward\": 1} or {\"camera\": [0, 15]}\n"
+    if USE_OPENAI_LLM and obs is not None:
+        # OpenAI mode: include image and use tool calling
+        user_msg = HumanMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        "You see the current Minecraft frame below.\n\n"
+                        f"Extra context:\n{context}\n\n"
+                        f"Camera state:\n{camera_info}\n"
+                        f"Previous actions:\n{prev_actions}\n\n"
+                        f"Episodic memory (similar past situation):\n{memory_block}\n\n"
+                        f"Goal: {goal}\n\n"
+                        "Remember: You only get reward when you collect WOOD LOGS from trees. "
+                        "If there is no reward, you did not hit the wood. "
+                        "Decide the next action and call the `step_env` tool."
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{obs}"
+                    },
+                },
+            ]
         )
-    )
+    else:
+        # Local model mode: text-only, expects JSON response
+        user_msg = HumanMessage(
+            content=(
+                "You are in a Minecraft world. Based on your memory and previous actions, "
+                "decide the next action to collect wood.\n\n"
+                f"Extra context:\n{context}\n\n"
+                f"Camera state:\n{camera_info}\n"
+                f"Previous actions:\n{prev_actions}\n\n"
+                f"Episodic memory (similar past situation):\n{memory_block}\n\n"
+                f"Goal: {goal}\n\n"
+                "Respond with ONLY a JSON action dict like: {\"forward\": 1} or {\"camera\": [0, 15]}\n"
+            )
+        )
 
     return user_msg
 
@@ -719,18 +816,19 @@ def run_agent_episode(agent, obs):
         memory_str = rag.get_action(FRAME_HISTORY)
 
     context = ""
-    user_msg = format_user_msg(context, memory_str=memory_str)
+    user_msg = format_user_msg(context, memory_str=memory_str, obs=obs)
 
     # Invoke the model
     ai_msg = agent.invoke([system_msg, user_msg])
 
     action_executed = False
 
-    # Try standard tool_calls first (may work with some HF models)
+    # Try standard tool_calls first (works with OpenAI and some HF models)
     if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
         for tool_call in ai_msg.tool_calls:
-            if tool_call.get("name") == "step_env":
-                raw_args = tool_call["args"]
+            tool_name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, 'name', None)
+            if tool_name == "step_env":
+                raw_args = tool_call.get("args") if isinstance(tool_call, dict) else tool_call.args
 
                 if "action" not in raw_args:
                     raw_args = {"action": raw_args}
@@ -741,8 +839,8 @@ def run_agent_episode(agent, obs):
                 done = result["done"]
                 action_executed = True
 
-    # Fallback: parse action from text output
-    if not action_executed:
+    # Fallback for local models: parse action from text output
+    if not action_executed and not USE_OPENAI_LLM:
         text_content = ai_msg.content if hasattr(ai_msg, 'content') else str(ai_msg)
         parsed_action = parse_action_from_text(text_content)
 
@@ -761,6 +859,13 @@ def run_agent_episode(agent, obs):
             obs = result["obs"]
             reward = result["reward"]
             done = result["done"]
+    elif not action_executed and USE_OPENAI_LLM:
+        # OpenAI mode but no tool call - use default action
+        print("Warning: OpenAI model did not make a tool call. Using default action.")
+        result = step_env.invoke({"action": {"camera": [0, 15]}})
+        obs = result["obs"]
+        reward = result["reward"]
+        done = result["done"]
 
     FRAME_HISTORY.append(obs)
 
@@ -777,9 +882,13 @@ def run_agent():
     print("Starting agent...")
     print("="*50 + "\n")
 
-    # Setup the local agent first (so we know model loading works)
-    print("Setting up local LLM agent...")
-    agent = setup_local_agent()
+    # Setup the agent based on configuration
+    if USE_OPENAI_LLM:
+        print("Setting up OpenAI LLM agent...")
+        agent = setup_openai_agent()
+    else:
+        print("Setting up local LLM agent...")
+        agent = setup_local_agent()
 
     # Start the env
     print("\nConnecting to MineRL environment...")
