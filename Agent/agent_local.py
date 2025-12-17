@@ -189,7 +189,7 @@ def log_result(wood):
         "wood_collected": wood
     }
 
-    path = f'Agent/Results/{EMBEDDING_METHOD}.jsonl'
+    path = f'Agent/Results/{RAG_CONFIG}.jsonl'
 
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
