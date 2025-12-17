@@ -32,14 +32,6 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
-# Load example images for visual training examples
-try:
-    with open('example_images.json', 'r') as f:
-        example_images = json.load(f)
-    EXAMPLE_IMAGES_AVAILABLE = True
-except Exception:
-    example_images = None
-    EXAMPLE_IMAGES_AVAILABLE = False
 
 # Load environment variables from .env file
 load_dotenv()
@@ -146,52 +138,42 @@ if USE_RAG:
 # =============================================================================
 
 def build_openai_system_prompt():
-    """Build the system prompt for OpenAI models with visual training examples."""
+    """Build the system prompt for OpenAI models with detailed behavioral examples."""
     base_prompt = OPENAI_SYSTEM_PROMPT
 
-    # If example images are available, add visual training examples
-    if EXAMPLE_IMAGES_AVAILABLE and example_images:
-        example_image_1 = "data:image/png;base64," + example_images["example_1"]
-        example_image_2 = "data:image/png;base64," + example_images["example_2"]
-        example_image_3 = "data:image/png;base64," + example_images["example_3"]
-        example_image_4 = "data:image/png;base64," + example_images["example_4"]
+    # Add detailed text-based training examples (without images - images as text don't work for vision)
+    # The model sees the current frame in the user message, so we provide behavioral guidance here
+    training_examples = """
 
-        example_action_1 = {"forward": 1}
-        example_action_2 = {"attack": 1}
-        example_action_3 = {"camera": [0, -30]}
-        example_action_4 = {"camera": [30, 0]}
+Detailed behavioral examples:
 
-        explanation_1 = "The agent saw the tree (object in white) in the distance and started moving towards it."
-        explanation_2 = "The agent is now at the tree. It continuously attacks the tree until the block is gone. Once the block is broken the reward is given."
-        explanation_3 = "The agent can only see dirt. There is nothing useful here and it should not be attacked. The agent should look around to find trees."
-        explanation_4 = "The agent just destroyed wood. To collect more the viewpoint needs to be changed. The agent can look up or down."
+EXAMPLE 1 - Tree visible in distance:
+- What you see: A tree trunk (brown/white vertical structure) visible ahead
+- Best action: {"forward": 1} - Move towards the tree
+- Why: The agent saw the tree in the distance and started moving towards it.
 
-        training_examples = (
-            "\n\nTraining examples:\n"
-            "\n"
-            "EXAMPLE 1:\n"
-            f"Input image: [{example_image_1}]\n"
-            f"Taken action: {example_action_1}\n"
-            f"The reason for the action: {explanation_1}\n"
-            "\n"
-            "EXAMPLE 2:\n"
-            f"Input image: [{example_image_2}]\n"
-            f"Taken action: {example_action_2}\n"
-            f"The reason for the action: {explanation_2}\n"
-            "\n"
-            "EXAMPLE 3:\n"
-            f"Input image: [{example_image_3}]\n"
-            f"Taken action: {example_action_3}\n"
-            f"The reason for the action: {explanation_3}\n"
-            "\n"
-            "EXAMPLE 4:\n"
-            f"Input image: [{example_image_4}]\n"
-            f"Taken action: {example_action_4}\n"
-            f"The reason for the action: {explanation_4}\n"
-        )
-        return base_prompt + training_examples
+EXAMPLE 2 - Close to tree trunk:
+- What you see: Tree trunk fills center of view, very close
+- Best action: {"attack": 1} - Attack to break the wood block
+- Why: The agent is now at the tree. Attack continuously until the block breaks and reward is given.
 
-    return base_prompt
+EXAMPLE 3 - No trees visible (dirt/grass only):
+- What you see: Only ground (dirt, grass) with no trees in view
+- Best action: {"camera": [0, -30]} or {"camera": [0, 30]} - Look around
+- Why: The agent can only see dirt. There is nothing useful here. Look around to find trees.
+
+EXAMPLE 4 - Just collected wood, need to find more:
+- What you see: Tree partially destroyed or wood block just collected
+- Best action: {"camera": [15, 0]} or {"camera": [-15, 0]} - Adjust view up/down
+- Why: The agent just destroyed wood. To collect more, adjust the viewpoint to see remaining tree or find new trees.
+
+Key visual cues for trees:
+- Trees have brown/tan vertical trunks
+- Oak logs appear as brown/beige blocks
+- Trees are taller than the ground and stand out against the sky
+- When close enough to attack, the trunk should be in the CENTER of your view
+"""
+    return base_prompt + training_examples
 
 # Select the appropriate system prompt based on LLM type
 if USE_OPENAI_LLM:
@@ -526,6 +508,13 @@ def format_user_msg(context: str, memory_str: str | None = None, obs: str | None
 
     memory_block = memory_str or "No relevant episodic memory was retrieved for this state."
 
+    # Print the prompt addition that will be added to the user message
+    print("\n" + "-"*80)
+    print("PROMPT ADDITION (Episodic Memory Section):")
+    print("-"*80)
+    print(memory_block)
+    print("-"*80 + "\n")
+
     camera_info = (
         f"Estimated camera pitch: {CAMERA_STATE['pitch']:.1f} degrees "
         "(0 = horizon; positive = down, negative = up).\n"
@@ -590,12 +579,42 @@ def run_agent_episode(agent, obs):
     memory_str = "No episodic memory yet (not enough frames)."
     if USE_RAG and rag and len(FRAME_HISTORY) == 16:
         memory_str = rag.get_action(FRAME_HISTORY)
+        print("\n" + "="*80)
+        print("RAG SYSTEM PROMPT ADDITION:")
+        print("="*80)
+        print(f"Retrieved memory from RAG system:\n{memory_str}")
+        print("="*80 + "\n")
 
     context = ""
     user_msg = format_user_msg(context, memory_str=memory_str, obs=obs)
 
-    # Invoke the model
-    ai_msg = agent.invoke([system_msg, user_msg])
+    # Invoke the model with retry logic for rate limiting
+    ai_msg = None
+    max_retries = 5
+    retry_delay = 6  # Start with 6 seconds (based on error message suggestion)
+
+    for attempt in range(max_retries):
+        try:
+            ai_msg = agent.invoke([system_msg, user_msg])
+            break  # Success, exit retry loop
+        except Exception as e:
+            error_str = str(e).lower()
+            if "rate limit" in error_str or "429" in str(e):
+                print(f"Hit rate limit. Waiting {retry_delay}s before retry {attempt + 1}/{max_retries}...")
+                time.sleep(retry_delay)
+                retry_delay *= 1.5  # Exponential backoff
+            else:
+                print(f"Error invoking model: {e}")
+                raise
+
+    if ai_msg is None:
+        print("Warning: Failed to get response from model after retries. Using default action.")
+        result = step_env.invoke({"action": {"camera": [0, 15]}})
+        obs = result["obs"]
+        reward = result["reward"]
+        done = result["done"]
+        FRAME_HISTORY.append(obs)
+        return obs, reward, done
 
     action_executed = False
 

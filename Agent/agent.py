@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from RAG_server import RAG
-from tqdm import tqdm 
+from tqdm import tqdm
 
 # Load environment variables from .env file
 load_dotenv()
@@ -482,6 +482,11 @@ def run_agent_episode(agent, obs):
     memory_str = "No episodic memory yet (not enough frames)."
     if test_setup['use_rag'] and len(FRAME_HISTORY) == 16:
         memory_str = rag.get_action(FRAME_HISTORY)
+        print("\n" + "="*80)
+        print("RAG SYSTEM PROMPT ADDITION:")
+        print("="*80)
+        print(f"Retrieved memory from RAG system:\n{memory_str}")
+        print("="*80 + "\n")
 
     # Write the query
     context = ""
@@ -498,7 +503,7 @@ def run_agent_episode(agent, obs):
                     raw_args = {"action": raw_args}
 
                 request_complete = False
-                
+
                 while not request_complete:
                     try:
                         result = step_env.invoke(raw_args)
@@ -577,7 +582,7 @@ def run_agent():
 
             if test_setup['use_max_frames']:
                 cur_frames += 1
-                
+
                 tqdm.write(f"Step {cur_frames} done")
                 pbar.update(1)
 
