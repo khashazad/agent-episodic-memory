@@ -39,7 +39,7 @@ load_dotenv()
 USE_OPENAI_LLM = os.environ.get("USE_OPENAI_LLM", "false").lower() == "true"
 
 # Import model setup utilities
-from utils.constants import (
+from utils.constants import (  # noqa: E402
     OPENAI_SYSTEM_PROMPT,
     LOCAL_SYSTEM_PROMPT,
     MINERL_ACTION_TEMPLATE,

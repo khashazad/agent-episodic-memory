@@ -219,6 +219,8 @@ class RAGActionBased(RAGBase):
         action_dict = self._get_last_action(action_descriptions)
         action_str = self._summarize_action(action_dict)
 
+        print(f"\t\tAction string: {action_str}")
+
         return (
             "Similar past situation from episodic memory:\n"
             f"- Last action taken in that sequence: {action_str}\n"
@@ -247,6 +249,8 @@ class RAGDocumentFull(RAGBase):
         if not document_text:
             return "No episode description available in memory."
 
+        print(f"\t\tDocument text: {document_text}")
+
         return (
             "Similar past situation from episodic memory:\n"
             f"Episode description: {document_text.strip()}\n"
@@ -274,6 +278,8 @@ class RAGDocumentChunk(RAGBase):
 
         if not document_text:
             return "No chunk description available in memory."
+
+        print(f"\t\tDocument text: {document_text}")
 
         return (
             "Similar past situation from episodic memory:\n"
