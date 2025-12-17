@@ -33,12 +33,6 @@ services:
     environment:
       - CHROMA_HOST=chromadb
       - CHROMA_PORT=8000
-    command:
-      - "--csv-v1=/data/chroma-data-v1.csv"
-      - "--collection-v1=episodic_memory_v1"
-      - "--csv-v2=/data/chroma-data-v2.csv"
-      - "--collection-v2=episodic_memory_v2"
-      - "--batch-size=100"
     networks:
       - agent-network
     restart: "no"  # Run once and exit
