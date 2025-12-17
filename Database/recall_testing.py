@@ -305,9 +305,9 @@ def test_frame_noise():
     test_sigmas = [0, 0.001, 0.01, 0.1, 1, 10, 100]
     recall_results = []
     
-    recall_results = frame_test.get_recall_on_sigmas(num_tests=1000, test_sigmas=test_sigmas)
+    recall_results = frame_test.get_recall_on_sigmas(num_tests=50, test_sigmas=test_sigmas)
 
-    #frame_test.save_recall_csv(recall_results, test_sigmas)
+    frame_test.save_recall_csv(recall_results, test_sigmas)
     frame_test.plot_recall(recall_results, test_sigmas)
 
 if __name__ == "__main__":
