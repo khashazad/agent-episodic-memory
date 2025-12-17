@@ -68,7 +68,7 @@ services:
   # Multi-environment server (supports multiple concurrent agents)
   minerl-multi-env:
     platform: linux/amd64
-    image: khashazad/minerl-multi-env:v1
+    image: khashazad/minerl-multi-env:v2
     container_name: minecraft-multi-env
     mem_limit: 16g
     memswap_limit: 16g
