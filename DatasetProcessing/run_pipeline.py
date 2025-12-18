@@ -83,7 +83,8 @@ def run_pipeline(args):
             output_dir=output_dir,
             window_size=args.window_size,
             stride=args.stride,
-            max_episodes=args.max_episodes
+            max_episodes=args.max_episodes,
+            force_recompute=args.force_recompute
         )
         if not success:
             logger.error("Pipeline failed at Step 1: Sliding window chunking")

@@ -33,7 +33,8 @@ class SlidingWindowProcessor:
         data_dir: Path,
         output_dir: Path,
         window_size: int = 16,
-        stride: int = 8
+        stride: int = 8,
+        force_recompute: bool = False
     ):
         """Initialize the sliding window processor.
 
@@ -42,15 +43,19 @@ class SlidingWindowProcessor:
             output_dir: Output directory for processed windows
             window_size: Number of frames per window (default: 16)
             stride: Number of frames to advance between windows (default: 8)
+            force_recompute: If True, reprocess episodes even if already done
         """
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
         self.window_size = window_size
         self.stride = stride
+        self.force_recompute = force_recompute
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Initialized sliding window processor: window_size={window_size}, stride={stride}")
         logger.info(f"Overlap: {((window_size - stride) / window_size * 100):.1f}%")
+        if not force_recompute:
+            logger.info("Resume mode enabled: skipping already processed episodes")
 
     def get_episode_directories(self) -> List[Path]:
         """Get all episode directories from the dataset."""
@@ -200,6 +205,24 @@ class SlidingWindowProcessor:
             }
         }
 
+    def _is_episode_processed(self, episode_dir: Path) -> bool:
+        """Check if an episode has already been processed.
+
+        Args:
+            episode_dir: Path to episode directory
+
+        Returns:
+            True if episode already has window directories with data
+        """
+        episode_output_dir = self.output_dir / episode_dir.name
+
+        if not episode_output_dir.exists():
+            return False
+
+        # Check if there are any window directories with frames.npy
+        window_dirs = list(episode_output_dir.glob("window_*/frames.npy"))
+        return len(window_dirs) > 0
+
     def process_episode(self, episode_dir: Path) -> int:
         """Process an episode using overlapping sliding windows.
 
@@ -207,8 +230,13 @@ class SlidingWindowProcessor:
             episode_dir: Path to episode directory
 
         Returns:
-            Number of windows created
+            Number of windows created (0 if skipped)
         """
+        # Skip if already processed (unless force_recompute is set)
+        if not self.force_recompute and self._is_episode_processed(episode_dir):
+            logger.debug(f"Skipping already processed episode: {episode_dir.name}")
+            return 0
+
         episode_data = self.load_episode(episode_dir)
         if episode_data is None:
             return 0
@@ -258,14 +286,14 @@ class SlidingWindowProcessor:
         logger.info(f"Created {windows_created} overlapping windows for episode {episode_dir.name}")
         return windows_created
 
-    def process_all_episodes(self, max_episodes: Optional[int] = None) -> int:
+    def process_all_episodes(self, max_episodes: Optional[int] = None) -> Tuple[int, int, int]:
         """Process all episodes using sliding window approach.
 
         Args:
             max_episodes: Optional limit on number of episodes to process
 
         Returns:
-            Total number of windows created
+            Tuple of (total_windows_created, episodes_processed, episodes_skipped)
         """
         episode_dirs = self.get_episode_directories()
 
@@ -274,20 +302,35 @@ class SlidingWindowProcessor:
             logger.info(f"Processing {max_episodes} episodes (limited)")
 
         total_windows = 0
+        episodes_processed = 0
+        episodes_skipped = 0
 
         for episode_dir in tqdm(episode_dirs, desc="Processing episodes with sliding windows"):
             try:
+                # Check if already processed before processing
+                was_already_processed = not self.force_recompute and self._is_episode_processed(episode_dir)
+
                 windows_created = self.process_episode(episode_dir)
                 total_windows += windows_created
+
+                if was_already_processed:
+                    episodes_skipped += 1
+                elif windows_created > 0:
+                    episodes_processed += 1
             except Exception as e:
                 logger.error(f"Error processing {episode_dir}: {e}")
                 continue
 
-        logger.info(f"Processing complete! Created {total_windows} total overlapping windows")
+        logger.info("Processing complete!")
+        logger.info(f"  Episodes processed: {episodes_processed}")
+        logger.info(f"  Episodes skipped (already done): {episodes_skipped}")
+        logger.info(f"  Windows created: {total_windows}")
 
         # Save summary
         summary = {
             'total_episodes': len(episode_dirs),
+            'episodes_processed': episodes_processed,
+            'episodes_skipped': episodes_skipped,
             'total_windows': total_windows,
             'window_size': self.window_size,
             'stride': self.stride,
@@ -299,7 +342,7 @@ class SlidingWindowProcessor:
         with open(self.output_dir / "dataset_summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
 
-        return total_windows
+        return total_windows, episodes_processed, episodes_skipped
 
 
 def run_step1(
@@ -307,7 +350,8 @@ def run_step1(
     output_dir: Path,
     window_size: int = 16,
     stride: int = 8,
-    max_episodes: Optional[int] = None
+    max_episodes: Optional[int] = None,
+    force_recompute: bool = False
 ) -> bool:
     """Run Step 1: Sliding window chunk creation.
 
@@ -317,6 +361,7 @@ def run_step1(
         window_size: Number of frames per window
         stride: Number of frames between window starts
         max_episodes: Optional limit on episodes to process
+        force_recompute: If True, reprocess episodes even if already done
 
     Returns:
         True if successful, False otherwise
@@ -330,12 +375,13 @@ def run_step1(
             data_dir=input_dir,
             output_dir=output_dir,
             window_size=window_size,
-            stride=stride
+            stride=stride,
+            force_recompute=force_recompute
         )
 
-        total_windows = processor.process_all_episodes(max_episodes=max_episodes)
+        total_windows, processed, skipped = processor.process_all_episodes(max_episodes=max_episodes)
 
-        logger.info(f"Step 1 completed: Created {total_windows} windows")
+        logger.info(f"Step 1 completed: Created {total_windows} windows ({processed} episodes processed, {skipped} skipped)")
         return True
 
     except Exception as e:
@@ -377,6 +423,11 @@ def main():
         default=None,
         help="Limit number of episodes to process"
     )
+    parser.add_argument(
+        "--force-recompute",
+        action="store_true",
+        help="Reprocess episodes even if already done"
+    )
 
     args = parser.parse_args()
 
@@ -385,7 +436,8 @@ def main():
         output_dir=Path(args.output_dir),
         window_size=args.window_size,
         stride=args.stride,
-        max_episodes=args.max_episodes
+        max_episodes=args.max_episodes,
+        force_recompute=args.force_recompute
     )
 
     exit(0 if success else 1)
