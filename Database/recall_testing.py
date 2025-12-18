@@ -4,29 +4,42 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from Database.client import ChromaClient
+from Database.milvus_client import MilvusClient
 from mineclip.mineclip import MineCLIP
 import numpy as np
 import torch
 import random
 from pathlib import Path
 import cv2
-from tqdm import tqdm, trange
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 import re
 import csv
 
 class RecallTesting():
-    def __init__(self, video_dir=".data/chunked_dataset_with_embeddings"):
-        self.db = self._init_database()
+    def __init__(self, video_dir=".data/chunked_dataset_with_embeddings", database='milvus', client='episodic_memory_hnsw'):
+        if database == 'chroma':
+            self.db = self._init_chroma_database()
+        else:
+            self.db = self._init_milvus_database(client=client)
+
         self.video_dir = video_dir
         self.step_re = re.compile(r"^Step\s+\d+:\s*")
     
     # Initilizing the database
-    def _init_database(self) -> ChromaClient:
+    def _init_chroma_database(self) -> ChromaClient:
         db = ChromaClient() # Database client
 
         if not db.connect():
             raise ConnectionError("Failed to connect to Chroma")
+        
+        return db
+    
+    def _init_milvus_database(self, client) -> MilvusClient:
+        db = MilvusClient(collection_name=client) # Database client
+
+        if not db.connect():
+            raise ConnectionError("Failed to connect to Milvus")
         
         return db
     
@@ -290,26 +303,31 @@ class FrameNoise(RecallTesting):
 
         return recall_results
 
-def test_embedding_noise():
+def test_embedding_noise(client='episodic_memory_hnsw', num_tests=50, test_sigmas=[0.001, 0.01, 0.1, 1, 10, 100], plot=False):
     embedding_test = EmbeddingNoise()
-    test_sigmas = [0.001, 0.01, 0.1, 1, 10, 100]
     recall_results = []
     
-    recall_results = embedding_test.get_recall_on_sigmas(num_tests=1000, test_sigmas=test_sigmas)
+    recall_results = embedding_test.get_recall_on_sigmas(num_tests=num_tests, test_sigmas=test_sigmas)
 
-    embedding_test.save_recall_csv(recall_results, test_sigmas)
-    embedding_test.plot_recall(recall_results, test_sigmas)
+    embedding_test.save_recall_csv(recall_results, test_sigmas, out_path=f'{client}_embedding.csv')
+    
+    if plot:
+        embedding_test.plot_recall(recall_results, test_sigmas)
 
-def test_frame_noise():
+def test_frame_noise(client='episodic_memory_hnsw', num_tests=50, test_sigmas=[0.001, 0.01, 0.1, 1, 10, 100], plot=False):
     frame_test = FrameNoise()
-    test_sigmas = [0, 0.001, 0.01, 0.1, 1, 10, 100]
     recall_results = []
     
-    recall_results = frame_test.get_recall_on_sigmas(num_tests=50, test_sigmas=test_sigmas)
+    recall_results = frame_test.get_recall_on_sigmas(num_tests=num_tests, test_sigmas=test_sigmas)
 
-    frame_test.save_recall_csv(recall_results, test_sigmas)
-    frame_test.plot_recall(recall_results, test_sigmas)
+    frame_test.save_recall_csv(recall_results, test_sigmas, out_path=f'{client}_frame.csv')
+
+    if plot:
+        frame_test.plot_recall(recall_results, test_sigmas)
 
 if __name__ == "__main__":
-    #test_embedding_noise()
-    test_frame_noise()
+    clients = ['episodic_memory_hnsw', 'episodic_memory_ivf_pq', 'episodic_memory_diskann']
+    num_tests = 50
+
+    test_embedding_noise(clients, num_tests=num_tests, test_sigmas=[0.2, 0.4, 0.6, 0.8])
+    test_frame_noise(clients, num_tests=num_tests, test_sigmas=[2, 4, 6, 8])
