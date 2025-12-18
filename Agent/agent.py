@@ -492,7 +492,16 @@ def run_agent_episode(agent, obs):
     context = ""
 
     user_msg = format_user_msg(obs, context, memory_str=memory_str)
-    ai_msg = agent.invoke([system_msg, user_msg])
+
+    request_complete = False
+    while not request_complete:
+        try:
+            ai_msg = agent.invoke([system_msg, user_msg])
+        except Exception as e:
+            print('Hit rate limit. Retrying.')
+            time.sleep(3)
+        else:
+            request_complete = True
 
     if ai_msg.tool_calls:
         for tool_call in ai_msg.tool_calls:
@@ -502,16 +511,7 @@ def run_agent_episode(agent, obs):
                 if "action" not in raw_args:
                     raw_args = {"action": raw_args}
 
-                request_complete = False
-
-                while not request_complete:
-                    try:
-                        result = step_env.invoke(raw_args)
-                    except Exception as e:
-                        print('Hit rate limit. Retrying.')
-                        time.sleep(3)
-                    else:
-                        request_complete = True
+                result = step_env.invoke(raw_args)
 
                 obs = result["obs"]
                 reward = result["reward"]
