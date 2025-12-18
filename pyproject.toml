@@ -45,6 +45,7 @@ dependencies = [
     "pip",
     "pydantic==2.12.5",
     "pydantic-core==2.41.5",
+    "pymilvus>=2.6.5",
     "pyparsing==3.2.5",
     "python-dateutil==2.9.0.post0",
     "pyyaml==6.0.3",
