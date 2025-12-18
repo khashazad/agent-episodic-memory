@@ -6,6 +6,7 @@ config.json
 
 chroma/
 .DS_Store
+.slurm_logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
