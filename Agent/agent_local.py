@@ -133,17 +133,82 @@ if USE_RAG:
     else:
         print("Warning: RAG requested but RAG_server not available")
 
+# Load example images for training examples
+try:
+    with open('example_images.json', 'r') as f:
+        example_images = json.load(f)
+    EXAMPLE_IMAGES_LOADED = True
+except FileNotFoundError:
+    # Try alternate path (when running from project root)
+    try:
+        with open('Agent/example_images.json', 'r') as f:
+            example_images = json.load(f)
+        EXAMPLE_IMAGES_LOADED = True
+    except FileNotFoundError:
+        print("Warning: example_images.json not found, using text-only examples")
+        example_images = {}
+        EXAMPLE_IMAGES_LOADED = False
+
+# Create base64 data URLs for example images
+example_image_1 = "data:image/png;base64," + example_images.get("example_1", "") if EXAMPLE_IMAGES_LOADED else None
+example_image_2 = "data:image/png;base64," + example_images.get("example_2", "") if EXAMPLE_IMAGES_LOADED else None
+example_image_3 = "data:image/png;base64," + example_images.get("example_3", "") if EXAMPLE_IMAGES_LOADED else None
+example_image_4 = "data:image/png;base64," + example_images.get("example_4", "") if EXAMPLE_IMAGES_LOADED else None
+
+# Example actions and explanations
+example_action_1 = {"forward": 1}
+example_action_2 = {"attack": 1}
+example_action_3 = {"camera": [0, -30]}
+example_action_4 = {"camera": [30, 0]}
+
+explanation_1 = "The agent saw the tree (object in white) in the distance and started moving towards it."
+explanation_2 = "The agent is now at the tree. It continuously attacks the tree until the block is gone. Once the block is broken the reward is given."
+explanation_3 = "The agent can only see dirt. There is nothing useful here and it should not be attacked. The agent should look around to find trees."
+explanation_4 = "The agent just destroyed wood. To collect more the viewpoint needs to be changed. The agent can look up or down."
+
 # =============================================================================
 # System prompt for the agent
 # =============================================================================
 
 def build_openai_system_prompt():
-    """Build the system prompt for OpenAI models with detailed behavioral examples."""
+    """Build the system prompt for OpenAI models with detailed behavioral examples including images."""
     base_prompt = OPENAI_SYSTEM_PROMPT
 
-    # Add detailed text-based training examples (without images - images as text don't work for vision)
-    # The model sees the current frame in the user message, so we provide behavioral guidance here
-    training_examples = """
+    # Add training examples with images (similar to agent.py)
+    if EXAMPLE_IMAGES_LOADED:
+        training_examples = f"""
+
+Training examples:
+
+EXAMPLE 1:
+Input image: [{example_image_1}]
+Taken action: {example_action_1}
+The reason for the action: {explanation_1}
+
+EXAMPLE 2:
+Input image: [{example_image_2}]
+Taken action: {example_action_2}
+The reason for the action: {explanation_2}
+
+EXAMPLE 3:
+Input image: [{example_image_3}]
+Taken action: {example_action_3}
+The reason for the action: {explanation_3}
+
+EXAMPLE 4:
+Input image: [{example_image_4}]
+Taken action: {example_action_4}
+The reason for the action: {explanation_4}
+
+Key visual cues for trees:
+- Trees have brown/tan vertical trunks
+- Oak logs appear as brown/beige blocks
+- Trees are taller than the ground and stand out against the sky
+- When close enough to attack, the trunk should be in the CENTER of your view
+"""
+    else:
+        # Fallback to text-only examples if images not available
+        training_examples = """
 
 Detailed behavioral examples:
 
