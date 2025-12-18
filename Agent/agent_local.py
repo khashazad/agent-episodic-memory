@@ -661,13 +661,9 @@ def run_agent_episode(agent, obs):
                 raise
 
     if ai_msg is None:
-        print("Warning: Failed to get response from model after retries. Using default action.")
-        result = step_env.invoke({"action": {"camera": [0, 15]}})
-        obs = result["obs"]
-        reward = result["reward"]
-        done = result["done"]
+        print("Warning: Failed to get response from model after retries. Skipping action (no-op).")
         FRAME_HISTORY.append(obs)
-        return obs, reward, done
+        return obs, 0, False
 
     action_executed = False
 
@@ -680,16 +676,18 @@ def run_agent_episode(agent, obs):
 
                 # Handle case where raw_args is not a dict
                 if not isinstance(raw_args, dict):
-                    print(f"Warning: Tool call args is not a dict: {raw_args}. Using default action.")
-                    raw_args = {"action": {"camera": [0, 15]}}
-                elif "action" not in raw_args:
+                    print(f"Warning: Tool call args is not a dict: {raw_args}. Skipping action (no-op).")
+                    FRAME_HISTORY.append(obs)
+                    return obs, 0, False
+                if "action" not in raw_args:
                     raw_args = {"action": raw_args}
 
                 # Validate that action is a dictionary
                 action_value = raw_args.get("action")
                 if not isinstance(action_value, dict):
-                    print(f"Warning: action is not a dict: {action_value}. Using default action.")
-                    raw_args = {"action": {"camera": [0, 15]}}
+                    print(f"Warning: action is not a dict: {action_value}. Skipping action (no-op).")
+                    FRAME_HISTORY.append(obs)
+                    return obs, 0, False
 
                 try:
                     result = step_env.invoke(raw_args)
@@ -698,12 +696,9 @@ def run_agent_episode(agent, obs):
                     done = result["done"]
                     action_executed = True
                 except Exception as e:
-                    print(f"Warning: Tool invocation failed: {e}. Using default action.")
-                    result = step_env.invoke({"action": {"camera": [0, 15]}})
-                    obs = result["obs"]
-                    reward = result["reward"]
-                    done = result["done"]
-                    action_executed = True
+                    print(f"Warning: Tool invocation failed: {e}. Skipping action (no-op).")
+                    FRAME_HISTORY.append(obs)
+                    return obs, 0, False
 
     # Fallback for local models: parse action from text output
     if not action_executed and not USE_OPENAI_LLM:
@@ -719,19 +714,14 @@ def run_agent_episode(agent, obs):
             action_executed = True
         else:
             print(f"Warning: Could not parse action from model output: {text_content[:300]}...")
-            # Default action: look around to explore
-            print("Using default action: camera turn")
-            result = step_env.invoke({"action": {"camera": [0, 15]}})
-            obs = result["obs"]
-            reward = result["reward"]
-            done = result["done"]
+            print("Skipping action (no-op).")
+            FRAME_HISTORY.append(obs)
+            return obs, 0, False
     elif not action_executed and USE_OPENAI_LLM:
-        # OpenAI mode but no tool call - use default action
-        print("Warning: OpenAI model did not make a tool call. Using default action.")
-        result = step_env.invoke({"action": {"camera": [0, 15]}})
-        obs = result["obs"]
-        reward = result["reward"]
-        done = result["done"]
+        # OpenAI mode but no tool call - skip action
+        print("Warning: OpenAI model did not make a tool call. Skipping action (no-op).")
+        FRAME_HISTORY.append(obs)
+        return obs, 0, False
 
     FRAME_HISTORY.append(obs)
 
