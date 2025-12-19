@@ -166,30 +166,42 @@ class ActionGenerator:
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
-        # Sample 4 frames from the window
+        # Sample 8 frames from the window
         images = self.sample_frames(frames, num_frames=8)
 
-        # Build the prompt
+        # Build the prompt with chain-of-thought reasoning (no biased example)
         prompt = """You are an AI agent playing Minecraft. Your goal is to collect wood from trees.
 
-Look at these frames from your current view and decide the NEXT BEST ACTION to take.
+Look at these 8 sequential frames from your current view carefully and analyze them.
+
+First, answer these questions:
+1. What do you see in the frames? Describe the environment (grass, trees, sky, blocks, etc.)
+2. Is there a tree visible? If yes, where is it positioned (center, left, right, far, close)?
+3. Are you currently facing a tree trunk or looking elsewhere?
+4. What should be your next action to efficiently collect wood?
 
 Available actions:
-- Movement: forward, back, left, right (0 = off, 1 = on)
-- Jump: jump (0 = off, 1 = on)
-- Attack: attack (0 = off, 1 = on) - use this to break wood blocks
-- Camera: [pitch_delta, yaw_delta] - pitch is up(-)/down(+), yaw is left(-)/right(+)
+- forward: 0 or 1 (move forward)
+- back: 0 or 1 (move backward)
+- left: 0 or 1 (strafe left)
+- right: 0 or 1 (strafe right)
+- jump: 0 or 1 (jump)
+- attack: 0 or 1 (break blocks/attack - use to chop wood)
+- camera: [pitch, yaw] where pitch is vertical (-10 to 10, negative=look up) and yaw is horizontal (-10 to 10, negative=look left)
 
 Decision guidelines:
-- If you see a tree trunk nearby, move forward and attack it
-- If no tree is visible, look around (use camera) to find one
-- If a tree is to the side, turn towards it with camera
-- When next to a tree, spam attack to break wood
+- If a tree trunk is directly in front and close: attack=1, forward=0
+- If a tree is visible but far: forward=1, attack=0
+- If a tree is to the left: camera=[0, -5] to turn left
+- If a tree is to the right: camera=[0, 5] to turn right
+- If no tree visible: camera=[0, 10] to look around
+- If looking at ground: camera=[-5, 0] to look up
+- If looking at sky: camera=[5, 0] to look down
 
-Respond with ONLY a JSON object like:
-{{"forward": 1, "attack": 1, "camera": [0, 0]}}
+After your analysis, output your chosen action as a JSON object on a new line with exactly these keys:
+{"forward": <0 or 1>, "back": <0 or 1>, "left": <0 or 1>, "right": <0 or 1>, "jump": <0 or 1>, "attack": <0 or 1>, "camera": [<pitch>, <yaw>]}
 
-Output the JSON action dict:"""
+Your analysis and action:"""
 
         # Create message with images
         messages = [
@@ -224,12 +236,14 @@ Output the JSON action dict:"""
         # Move to device
         inputs = inputs.to(self.model.device)
 
-        # Generate
+        # Generate with sampling for diverse outputs
         with torch.no_grad():
             generated_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=100,
-                do_sample=False,
+                max_new_tokens=300,  # More tokens for chain-of-thought reasoning
+                do_sample=True,      # Enable sampling for diversity
+                temperature=0.7,     # Add randomness
+                top_p=0.9,           # Nucleus sampling
                 pad_token_id=self.processor.tokenizer.pad_token_id
             )
 
@@ -245,19 +259,21 @@ Output the JSON action dict:"""
             clean_up_tokenization_spaces=False
         )[0]
 
+        # Log raw output for debugging
+        logger.info(f"Raw model output: {output[:500]}")
+
         # Parse the action
         action = self.parse_action_json(output)
 
-        print(f"\t\taction: {action}")
+        logger.info(f"Parsed action: {action}")
 
         if action is None:
             logger.warning(f"Could not parse action from response: {output[:200]}")
-            # Return default action (move forward)
+            # Return default action (move forward and look around)
             return {"forward": 1, "back": 0, "left": 0, "right": 0,
-                    "jump": 0, "attack": 0, "camera": [0.0, 0.0]}
+                    "jump": 0, "attack": 0, "camera": [0.0, 5.0]}
 
         return action
-
 
 def process_windows(
     data_dir: Path,
