@@ -13,5 +13,10 @@
     "name": "document_chunk",
     "collection": "episodic_memory_v2",
     "description": "Uses chunk LLM description from document text"
+  },
+  "v4": {
+    "name": "fused_multimodal",
+    "collection": "episodic_memory_v3",
+    "description": "Uses fused video+text embeddings for similarity search with next_action retrieval"
   }
 }
