@@ -144,8 +144,7 @@ def run_pipeline(args):
             device=args.device,
             resume=not args.no_resume,
             start_window=args.start_window,
-            end_window=args.end_window,
-            use_descriptions=True
+            end_window=args.end_window
         )
         if not success:
             logger.error("Pipeline failed at Step 5: Generate actions")

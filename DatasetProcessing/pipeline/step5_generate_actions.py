@@ -32,7 +32,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from . import get_device, get_window_dirs
+from . import get_window_dirs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -154,12 +154,11 @@ class ActionGenerator:
 
         return None
 
-    def generate_action(self, frames: np.ndarray, description: Optional[str] = None) -> Dict:
+    def generate_action(self, frames: np.ndarray) -> Dict:
         """Generate next action prediction for a window of frames.
 
         Args:
             frames: NumPy array of frames [16, H, W, 3]
-            description: Optional scene description to include in prompt
 
         Returns:
             Action dict with movement and camera controls
@@ -168,17 +167,13 @@ class ActionGenerator:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
         # Sample 4 frames from the window
-        images = self.sample_frames(frames, num_frames=4)
+        images = self.sample_frames(frames, num_frames=8)
 
         # Build the prompt
-        description_context = ""
-        if description:
-            description_context = f"\nScene description: {description}\n"
-
-        prompt = f"""You are an AI agent playing Minecraft. Your goal is to collect wood from trees.
+        prompt = """You are an AI agent playing Minecraft. Your goal is to collect wood from trees.
 
 Look at these frames from your current view and decide the NEXT BEST ACTION to take.
-{description_context}
+
 Available actions:
 - Movement: forward, back, left, right (0 = off, 1 = on)
 - Jump: jump (0 = off, 1 = on)
@@ -205,6 +200,10 @@ Output the JSON action dict:"""
                     {"type": "image", "image": images[1]},
                     {"type": "image", "image": images[2]},
                     {"type": "image", "image": images[3]},
+                    {"type": "image", "image": images[4]},
+                    {"type": "image", "image": images[5]},
+                    {"type": "image", "image": images[6]},
+                    {"type": "image", "image": images[7]},
                     {"type": "text", "text": prompt}
                 ]
             }
@@ -263,8 +262,7 @@ def process_windows(
     generator: ActionGenerator,
     resume: bool = True,
     start_window: int = 0,
-    end_window: Optional[int] = None,
-    use_descriptions: bool = True
+    end_window: Optional[int] = None
 ) -> int:
     """Process windows to generate action predictions.
 
@@ -274,7 +272,6 @@ def process_windows(
         resume: If True, skip windows that already have actions
         start_window: Start from this window index
         end_window: End at this window index (exclusive)
-        use_descriptions: If True, include description in prompt
 
     Returns:
         Number of windows processed
@@ -311,16 +308,8 @@ def process_windows(
 
             frames = np.load(frames_path)
 
-            # Optionally load description
-            description = None
-            if use_descriptions:
-                description_path = window_dir / "description.txt"
-                if description_path.exists():
-                    with open(description_path, 'r', encoding='utf-8') as f:
-                        description = f.read().strip()
-
-            # Generate action
-            action = generator.generate_action(frames, description=description)
+            # Generate action from frames only
+            action = generator.generate_action(frames)
 
             # Save action
             with open(action_path, 'w', encoding='utf-8') as f:
@@ -341,8 +330,7 @@ def run_step5(
     device: str = "auto",
     resume: bool = True,
     start_window: int = 0,
-    end_window: Optional[int] = None,
-    use_descriptions: bool = True
+    end_window: Optional[int] = None
 ) -> bool:
     """Run Step 5: Generate action predictions using Qwen VLM.
 
@@ -353,7 +341,6 @@ def run_step5(
         resume: If True, skip windows that already have actions
         start_window: Start from this window index
         end_window: End at this window index
-        use_descriptions: If True, include description in prompt
 
     Returns:
         True if successful, False otherwise
@@ -371,8 +358,7 @@ def run_step5(
             generator=generator,
             resume=resume,
             start_window=start_window,
-            end_window=end_window,
-            use_descriptions=use_descriptions
+            end_window=end_window
         )
 
         logger.info(f"Step 5 completed: Generated {processed} action predictions")
@@ -424,11 +410,6 @@ def main():
         default=None,
         help="End at this window index"
     )
-    parser.add_argument(
-        "--no-descriptions",
-        action="store_true",
-        help="Don't use descriptions in action generation prompt"
-    )
 
     args = parser.parse_args()
 
@@ -438,8 +419,7 @@ def main():
         device=args.device,
         resume=not args.no_resume,
         start_window=args.start_window,
-        end_window=args.end_window,
-        use_descriptions=not args.no_descriptions
+        end_window=args.end_window
     )
 
     exit(0 if success else 1)
