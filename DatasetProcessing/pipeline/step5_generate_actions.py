@@ -57,7 +57,7 @@ class ActionGenerator:
         self,
         model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct",
         device: str = "auto",
-        batch_size: int = 4
+        batch_size: int = 8
     ):
         """Initialize the action generator.
 
@@ -106,7 +106,7 @@ class ActionGenerator:
 
         logger.info(f"Model loaded on device: {device_map}")
 
-    def sample_frames(self, frames: np.ndarray, num_frames: int = 4) -> List[Image.Image]:
+    def sample_frames(self, frames: np.ndarray, num_frames: int = 8) -> List[Image.Image]:
         """Sample frames evenly from the window for VLM input.
 
         Args:
@@ -495,7 +495,7 @@ def run_step5(
     resume: bool = True,
     start_window: int = 0,
     end_window: Optional[int] = None,
-    batch_size: int = 4
+    batch_size: int = 8
 ) -> bool:
     """Run Step 5: Generate action predictions using Qwen VLM.
 

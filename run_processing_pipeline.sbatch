@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=processing_pipeline
-#SBATCH --output=.slurm_logs/run_processing_pipeline_%j.out
-#SBATCH --error=.slurm_logs/run_processing_pipeline_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --output=.slurm_logs/%j/output.out
+#SBATCH --error=.slurm_logs/%j/error.err
+#SBATCH --time=48:00:00
 #SBATCH --partition=gpunodes
 #SBATCH -c 4
 #SBATCH --mem=32GB
