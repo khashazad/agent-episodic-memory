@@ -265,7 +265,7 @@ def main():
     parser.add_argument(
         "--csv-path",
         type=str,
-        default=".data/vector_db.csv",
+        default=".data/vectordb_data.csv",
         help="Path to vector_db.csv file"
     )
     parser.add_argument(
@@ -289,7 +289,7 @@ def main():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1000,
+        default=5000,
         help="Number of items to insert per batch"
     )
     parser.add_argument(
