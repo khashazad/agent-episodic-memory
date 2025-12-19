@@ -12,4 +12,4 @@
 
 uv run python DatasetProcessing/run_pipeline.py --skip-step1 --skip-step2 --skip-step3 --skip-step4 --no-resume
 
-print "Job completed successfully at: $(date)"
+echo "Job completed successfully at: $(date)"

@@ -248,6 +248,8 @@ Output the JSON action dict:"""
         # Parse the action
         action = self.parse_action_json(output)
 
+        print(f"\t\taction: {action}")
+
         if action is None:
             logger.warning(f"Could not parse action from response: {output[:200]}")
             # Return default action (move forward)
