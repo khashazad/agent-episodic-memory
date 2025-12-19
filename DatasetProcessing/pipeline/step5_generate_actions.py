@@ -56,16 +56,19 @@ class ActionGenerator:
     def __init__(
         self,
         model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct",
-        device: str = "auto"
+        device: str = "auto",
+        batch_size: int = 4
     ):
         """Initialize the action generator.
 
         Args:
             model_id: HuggingFace model ID for Qwen VLM
             device: Device to use ('auto', 'cuda', 'cpu')
+            batch_size: Number of windows to process in a single batch
         """
         self.model_id = model_id
         self.device = device
+        self.batch_size = batch_size
         self.model = None
         self.processor = None
 
@@ -154,23 +157,9 @@ class ActionGenerator:
 
         return None
 
-    def generate_action(self, frames: np.ndarray) -> Dict:
-        """Generate next action prediction for a window of frames.
-
-        Args:
-            frames: NumPy array of frames [16, H, W, 3]
-
-        Returns:
-            Action dict with movement and camera controls
-        """
-        if self.model is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
-
-        # Sample 8 frames from the window
-        images = self.sample_frames(frames, num_frames=8)
-
-        # Build the prompt with chain-of-thought reasoning (no biased example)
-        prompt = """You are an AI agent playing Minecraft. Your goal is to collect wood from trees.
+    def _get_prompt(self) -> str:
+        """Get the prompt for action generation."""
+        return """You are an AI agent playing Minecraft. Your goal is to collect wood from trees.
 
 Look at these 8 sequential frames from your current view carefully and analyze them.
 
@@ -203,8 +192,17 @@ After your analysis, output your chosen action as a JSON object on a new line wi
 
 Your analysis and action:"""
 
-        # Create message with images
-        messages = [
+    def _build_messages(self, images: List[Image.Image]) -> List[Dict]:
+        """Build chat messages with images for the VLM.
+
+        Args:
+            images: List of 8 PIL Images
+
+        Returns:
+            List of message dicts for the chat template
+        """
+        prompt = self._get_prompt()
+        return [
             {
                 "role": "user",
                 "content": [
@@ -220,6 +218,24 @@ Your analysis and action:"""
                 ]
             }
         ]
+
+    def generate_action(self, frames: np.ndarray) -> Dict:
+        """Generate next action prediction for a window of frames.
+
+        Args:
+            frames: NumPy array of frames [16, H, W, 3]
+
+        Returns:
+            Action dict with movement and camera controls
+        """
+        if self.model is None:
+            raise RuntimeError("Model not loaded. Call load_model() first.")
+
+        # Sample 8 frames from the window
+        images = self.sample_frames(frames, num_frames=8)
+
+        # Build messages using helper
+        messages = self._build_messages(images)
 
         # Process inputs
         text = self.processor.apply_chat_template(
@@ -275,6 +291,93 @@ Your analysis and action:"""
 
         return action
 
+    def generate_actions_batch(self, frames_list: List[np.ndarray]) -> List[Dict]:
+        """Generate action predictions for a batch of frame windows.
+
+        Args:
+            frames_list: List of NumPy arrays, each [16, H, W, 3]
+
+        Returns:
+            List of action dicts, one per input window
+        """
+        if self.model is None:
+            raise RuntimeError("Model not loaded. Call load_model() first.")
+
+        if not frames_list:
+            return []
+
+        batch_size = len(frames_list)
+
+        # Sample frames from each window
+        all_images = [self.sample_frames(frames, num_frames=8) for frames in frames_list]
+
+        # Build messages for each sample
+        messages_batch = [self._build_messages(images) for images in all_images]
+
+        # Apply chat template to each
+        texts = [
+            self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            for messages in messages_batch
+        ]
+
+        # Flatten images for processor (it expects all images in order)
+        flat_images = [img for images in all_images for img in images]
+
+        # Process all at once with padding
+        inputs = self.processor(
+            text=texts,
+            images=flat_images,
+            padding=True,
+            return_tensors="pt"
+        )
+
+        # Move to device
+        inputs = inputs.to(self.model.device)
+
+        # Generate with sampling for diverse outputs
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=300,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                pad_token_id=self.processor.tokenizer.pad_token_id
+            )
+
+        # Decode each output
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+
+        outputs = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )
+
+        # Parse actions from each output
+        actions = []
+        for i, output in enumerate(outputs):
+            logger.debug(f"Batch item {i} raw output: {output[:300]}")
+
+            action = self.parse_action_json(output)
+
+            if action is None:
+                logger.warning(f"Could not parse action from batch item {i}: {output[:200]}")
+                # Use default action
+                action = {"forward": 1, "back": 0, "left": 0, "right": 0,
+                          "jump": 0, "attack": 0, "camera": [0.0, 5.0]}
+
+            actions.append(action)
+
+        logger.info(f"Batch generated {len(actions)} actions")
+        return actions
+
+
 def process_windows(
     data_dir: Path,
     generator: ActionGenerator,
@@ -282,7 +385,7 @@ def process_windows(
     start_window: int = 0,
     end_window: Optional[int] = None
 ) -> int:
-    """Process windows to generate action predictions.
+    """Process windows to generate action predictions using batching.
 
     Args:
         data_dir: Path to dataset with window directories
@@ -306,38 +409,81 @@ def process_windows(
     else:
         window_dirs = window_dirs[start_window:]
 
-    logger.info(f"Processing {len(window_dirs)} windows for action predictions")
-
-    processed_count = 0
-
-    for window_dir in tqdm(window_dirs, desc="Generating actions"):
+    # Filter to windows that need processing
+    windows_to_process = []
+    for window_dir in window_dirs:
         action_path = window_dir / "next_action.json"
+        frames_path = window_dir / "frames.npy"
 
         # Skip if already exists and resume is True
         if resume and action_path.exists():
             continue
 
+        if not frames_path.exists():
+            logger.warning(f"No frames.npy in {window_dir}")
+            continue
+
+        windows_to_process.append(window_dir)
+
+    if not windows_to_process:
+        logger.info("No windows to process")
+        return 0
+
+    logger.info(f"Processing {len(windows_to_process)} windows for action predictions (batch_size={generator.batch_size})")
+
+    processed_count = 0
+    batch_size = generator.batch_size
+
+    # Process in batches
+    for batch_start in tqdm(range(0, len(windows_to_process), batch_size), desc="Generating actions (batched)"):
+        batch_end = min(batch_start + batch_size, len(windows_to_process))
+        batch_window_dirs = windows_to_process[batch_start:batch_end]
+
         try:
-            # Load frames
-            frames_path = window_dir / "frames.npy"
-            if not frames_path.exists():
-                logger.warning(f"No frames.npy in {window_dir}")
+            # Load frames for this batch
+            frames_list = []
+            valid_window_dirs = []
+
+            for window_dir in batch_window_dirs:
+                frames_path = window_dir / "frames.npy"
+                try:
+                    frames = np.load(frames_path)
+                    frames_list.append(frames)
+                    valid_window_dirs.append(window_dir)
+                except Exception as e:
+                    logger.error(f"Error loading frames from {window_dir}: {e}")
+                    continue
+
+            if not frames_list:
                 continue
 
-            frames = np.load(frames_path)
+            # Generate actions for the batch
+            actions = generator.generate_actions_batch(frames_list)
 
-            # Generate action from frames only
-            action = generator.generate_action(frames)
-
-            # Save action
-            with open(action_path, 'w', encoding='utf-8') as f:
-                json.dump(action, f, indent=2)
-
-            processed_count += 1
+            # Save results
+            for window_dir, action in zip(valid_window_dirs, actions):
+                action_path = window_dir / "next_action.json"
+                with open(action_path, 'w', encoding='utf-8') as f:
+                    json.dump(action, f, indent=2)
+                processed_count += 1
 
         except Exception as e:
-            logger.error(f"Error processing {window_dir}: {e}")
-            continue
+            logger.error(f"Error processing batch starting at {batch_start}: {e}")
+            # Fall back to individual processing for this batch
+            for window_dir in batch_window_dirs:
+                try:
+                    frames_path = window_dir / "frames.npy"
+                    if not frames_path.exists():
+                        continue
+                    frames = np.load(frames_path)
+                    action = generator.generate_action(frames)
+                    action_path = window_dir / "next_action.json"
+                    with open(action_path, 'w', encoding='utf-8') as f:
+                        json.dump(action, f, indent=2)
+                    processed_count += 1
+                except Exception as inner_e:
+                    logger.error(f"Error in fallback processing {window_dir}: {inner_e}")
+                    continue
 
     return processed_count
 
@@ -348,7 +494,8 @@ def run_step5(
     device: str = "auto",
     resume: bool = True,
     start_window: int = 0,
-    end_window: Optional[int] = None
+    end_window: Optional[int] = None,
+    batch_size: int = 4
 ) -> bool:
     """Run Step 5: Generate action predictions using Qwen VLM.
 
@@ -359,6 +506,7 @@ def run_step5(
         resume: If True, skip windows that already have actions
         start_window: Start from this window index
         end_window: End at this window index
+        batch_size: Number of windows to process in a single batch
 
     Returns:
         True if successful, False otherwise
@@ -368,7 +516,7 @@ def run_step5(
     logger.info("=" * 50)
 
     try:
-        generator = ActionGenerator(model_id=model_id, device=device)
+        generator = ActionGenerator(model_id=model_id, device=device, batch_size=batch_size)
         generator.load_model()
 
         processed = process_windows(
@@ -428,6 +576,12 @@ def main():
         default=None,
         help="End at this window index"
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Number of windows to process in a single batch (default: 4)"
+    )
 
     args = parser.parse_args()
 
@@ -437,7 +591,8 @@ def main():
         device=args.device,
         resume=not args.no_resume,
         start_window=args.start_window,
-        end_window=args.end_window
+        end_window=args.end_window,
+        batch_size=args.batch_size
     )
 
     exit(0 if success else 1)
