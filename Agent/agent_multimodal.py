@@ -975,6 +975,29 @@ def check_rag_suggests_attack(memory_str: str) -> bool:
     return any(keyword in memory_lower for keyword in attack_keywords)
 
 
+def check_looking_down(description: str) -> bool:
+    """Check if the description indicates agent is looking down at ground."""
+    desc_lower = description.lower()
+    # Looking down at ground means we're not looking at tree trunk
+    looking_down = "looking down" in desc_lower
+    seeing_ground = ("ground" in desc_lower or "dirt" in desc_lower) and "tree" not in desc_lower.split("looking")[0] if "looking" in desc_lower else False
+    return looking_down or seeing_ground
+
+
+def needs_pitch_correction() -> bool:
+    """Check if camera pitch needs correction (looking too far down)."""
+    # If pitch is positive (looking down), we should look up
+    return CAMERA_STATE["pitch"] > 10.0
+
+
+def get_pitch_correction_action() -> dict:
+    """Get action to correct camera pitch to look more level/up at trees."""
+    # Look up by adjusting pitch negatively
+    correction = min(-15.0, -CAMERA_STATE["pitch"])  # Look up
+    print(f"  [Pitch Correction] Current pitch: {CAMERA_STATE['pitch']:.1f}, adjusting by {correction:.1f}")
+    return {"camera": [correction, 0]}
+
+
 def run_agent_episode(agent, obs):
     """Run a single agent episode step."""
     reward = 0
@@ -999,9 +1022,16 @@ def run_agent_episode(agent, obs):
     # Query episodic memory using fused embeddings if available
     memory_str = "No episodic memory yet (not enough frames)."
     rag_suggests_attack = False
+    current_description = ""
     if USE_RAG and rag and len(FRAME_HISTORY) == 16:
         print("\nQuerying episodic memory with fused embedding...")
         memory_str = rag.get_action(list(FRAME_HISTORY))
+        # Extract current description from memory string
+        if "Current observation:" in memory_str:
+            try:
+                current_description = memory_str.split("Current observation:")[1].split("\n")[0].strip()
+            except (IndexError, ValueError):
+                pass
         rag_suggests_attack = check_rag_suggests_attack(memory_str)
 
     context = ""
@@ -1028,13 +1058,23 @@ def run_agent_episode(agent, obs):
 
     if ai_msg is None:
         print("Warning: Failed to get response from model after retries.")
-        # Fallback: if RAG suggests attack, do attack
+        # Fallback: if RAG suggests attack, do attack (but check pitch first)
         if rag_suggests_attack:
-            print("  Fallback: RAG suggests attack, initiating sustained attack.")
-            start_sustained_attack()
-            result = step_env.invoke({"action": {"attack": 1}})
-            FRAME_HISTORY.append(result["obs"])
-            return result["obs"], result["reward"], result["done"]
+            looking_down = check_looking_down(current_description) if current_description else False
+            pitch_too_low = needs_pitch_correction()
+
+            if looking_down or pitch_too_low:
+                print("  Fallback: RAG suggests attack, but looking down. Correcting pitch first.")
+                correction_action = get_pitch_correction_action()
+                result = step_env.invoke({"action": correction_action})
+                FRAME_HISTORY.append(result["obs"])
+                return result["obs"], result["reward"], result["done"]
+            else:
+                print("  Fallback: RAG suggests attack, initiating sustained attack.")
+                start_sustained_attack()
+                result = step_env.invoke({"action": {"attack": 1}})
+                FRAME_HISTORY.append(result["obs"])
+                return result["obs"], result["reward"], result["done"]
         FRAME_HISTORY.append(obs)
         return obs, 0, False
 
@@ -1089,13 +1129,23 @@ def run_agent_episode(agent, obs):
             action_executed = True
         else:
             print(f"Warning: Could not parse action from model output: {text_content[:300]}...")
-            # Fallback: if RAG suggests attack, do attack
+            # Fallback: if RAG suggests attack, do attack (but check pitch first)
             if rag_suggests_attack:
-                print("  Fallback: RAG suggests attack, initiating sustained attack.")
-                start_sustained_attack()
-                result = step_env.invoke({"action": {"attack": 1}})
-                FRAME_HISTORY.append(result["obs"])
-                return result["obs"], result["reward"], result["done"]
+                looking_down = check_looking_down(current_description) if current_description else False
+                pitch_too_low = needs_pitch_correction()
+
+                if looking_down or pitch_too_low:
+                    print("  Fallback: RAG suggests attack but looking down. Correcting pitch first.")
+                    correction_action = get_pitch_correction_action()
+                    result = step_env.invoke({"action": correction_action})
+                    FRAME_HISTORY.append(result["obs"])
+                    return result["obs"], result["reward"], result["done"]
+                else:
+                    print("  Fallback: RAG suggests attack, initiating sustained attack.")
+                    start_sustained_attack()
+                    result = step_env.invoke({"action": {"attack": 1}})
+                    FRAME_HISTORY.append(result["obs"])
+                    return result["obs"], result["reward"], result["done"]
             print("Skipping action (no-op).")
             FRAME_HISTORY.append(obs)
             return obs, 0, False
@@ -1107,20 +1157,45 @@ def run_agent_episode(agent, obs):
             ACTION_HISTORY[-1].get("action", {}).get("attack", 0) == 1
         )
         if rag_suggests_attack or last_action_was_attack:
-            print("  Fallback: Continuing/initiating attack based on RAG or previous action.")
-            start_sustained_attack()
-            result = step_env.invoke({"action": {"attack": 1}})
-            FRAME_HISTORY.append(result["obs"])
-            return result["obs"], result["reward"], result["done"]
+            looking_down = check_looking_down(current_description) if current_description else False
+            pitch_too_low = needs_pitch_correction()
+
+            if looking_down or pitch_too_low:
+                print("  Fallback: Attack suggested but looking down. Correcting pitch first.")
+                correction_action = get_pitch_correction_action()
+                result = step_env.invoke({"action": correction_action})
+                FRAME_HISTORY.append(result["obs"])
+                return result["obs"], result["reward"], result["done"]
+            else:
+                print("  Fallback: Continuing/initiating attack based on RAG or previous action.")
+                start_sustained_attack()
+                result = step_env.invoke({"action": {"attack": 1}})
+                FRAME_HISTORY.append(result["obs"])
+                return result["obs"], result["reward"], result["done"]
         print("Skipping action (no-op).")
         FRAME_HISTORY.append(obs)
         return obs, 0, False
 
-    # If the model chose to attack, start sustained attack sequence
+    # If the model chose to attack, check if we need pitch correction first
     if executed_action and executed_action.get("attack", 0) == 1:
-        start_sustained_attack()
-        # Already executed one attack, so decrement
-        SUSTAINED_ATTACK_STATE["frames_remaining"] -= 1
+        # Check if we're looking down (at ground instead of tree trunk)
+        looking_down = check_looking_down(current_description) if current_description else False
+        pitch_too_low = needs_pitch_correction()
+
+        if looking_down or pitch_too_low:
+            # Don't start sustained attack yet - correct pitch first
+            print("  [Attack Prep] Looking down detected. Correcting pitch before attacking...")
+            correction_action = get_pitch_correction_action()
+            result = step_env.invoke({"action": correction_action})
+            obs = result["obs"]
+            reward = result["reward"]
+            done = result["done"]
+            # Don't start sustained attack - let next frame re-evaluate
+        else:
+            # Good camera angle - start sustained attack
+            start_sustained_attack()
+            # Already executed one attack, so decrement
+            SUSTAINED_ATTACK_STATE["frames_remaining"] -= 1
 
     FRAME_HISTORY.append(obs)
 

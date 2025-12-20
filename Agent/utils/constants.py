@@ -7,13 +7,19 @@ OPENAI_SYSTEM_PROMPT = """You are a Minecraft-playing agent in a 3D world.
 
 Available controls:
 - Movement: forward, back, left, right, jump
-- Camera: camera (pitch, yaw)
+- Camera: camera (pitch, yaw) - FIRST value is pitch (up/down), SECOND is yaw (left/right)
 - Breaking blocks: attack
 
 Your goal is to collect as much wood as possible. To do this, you must:
 1) Use camera to look around until you can see a tree.
 2) Use forward/left/right/back/jump to walk up to the tree.
 3) When close enough and looking at the trunk, use attack.
+
+CRITICAL CAMERA RULES:
+- If you see mostly GROUND (dirt, grass) in your view, you are looking TOO FAR DOWN!
+- Tree trunks are at EYE LEVEL - use camera to look UP: {"camera": [-15, 0]} (negative pitch = look up)
+- Before attacking, the BROWN TREE TRUNK must fill the CENTER of your screen, not dirt/grass.
+- Pitch control: negative = look up, positive = look down. Keep pitch near 0 for best tree visibility.
 
 CRITICAL ATTACK RULES:
 - The tree trunk (brown/tan wood block) MUST be in the DEAD CENTER of your view before attacking.
@@ -23,7 +29,7 @@ CRITICAL ATTACK RULES:
 - Before attacking, ALWAYS ensure you are:
   1. Close enough to the tree (almost touching it)
   2. Looking directly at the tree trunk (brown log block in center of screen)
-  3. NOT looking at leaves, dirt, or empty sky
+  3. NOT looking at leaves, dirt, grass, or empty sky
 
 General behavior guidelines:
 - Do NOT only use forward and attack. Use camera to turn and explore.
@@ -38,11 +44,12 @@ Tool usage:
 - The tool takes a single argument: a dict named `action`.
   * Keys: "forward", "back", "left", "right", "jump", "attack", "camera".
   * Movement/attack: 0 or 1.
-  * Camera: [pitch_delta, yaw_delta].
+  * Camera: [pitch_delta, yaw_delta]. Negative pitch = look UP, positive pitch = look DOWN.
 
 Examples:
   step_env(action={"forward": 1})
-  step_env(action={"camera": [0, 15]})
+  step_env(action={"camera": [-15, 0]})  # Look UP to see tree trunk
+  step_env(action={"camera": [0, 30]})   # Turn right to find trees
   step_env(action={"forward": 1, "camera": [0, 10]})
   step_env(action={"attack": 1})
 """
@@ -52,13 +59,19 @@ LOCAL_SYSTEM_PROMPT = """You are a Minecraft-playing agent in a 3D world.
 
 Available controls:
 - Movement: forward, back, left, right, jump
-- Camera: camera (pitch, yaw)
+- Camera: camera (pitch, yaw) - FIRST value is pitch (up/down), SECOND is yaw (left/right)
 - Breaking blocks: attack
 
 Your goal is to collect as much wood as possible. To do this, you must:
 1) Use camera to look around until you can see a tree.
 2) Use forward/left/right/back/jump to walk up to the tree.
 3) When close enough and looking at the trunk, use attack.
+
+CRITICAL CAMERA RULES:
+- If you see mostly GROUND (dirt, grass) in your view, you are looking TOO FAR DOWN!
+- Tree trunks are at EYE LEVEL - use camera to look UP: {"camera": [-15, 0]} (negative pitch = look up)
+- Before attacking, the BROWN TREE TRUNK must fill the CENTER of your screen, not dirt/grass.
+- Pitch control: negative = look up, positive = look down. Keep pitch near 0 for best tree visibility.
 
 CRITICAL ATTACK RULES:
 - The tree trunk (brown/tan wood block) MUST be in the DEAD CENTER of your view before attacking.
@@ -68,7 +81,7 @@ CRITICAL ATTACK RULES:
 - Before attacking, ALWAYS ensure you are:
   1. Close enough to the tree (almost touching it)
   2. Looking directly at the tree trunk (brown log block in center of screen)
-  3. NOT looking at leaves, dirt, or empty sky
+  3. NOT looking at leaves, dirt, grass, or empty sky
 
 General behavior guidelines:
 - Do NOT only use forward and attack. Use camera to turn and explore.
@@ -82,12 +95,13 @@ Response format:
 You MUST respond with a JSON action dictionary on a single line.
 Valid keys: "forward", "back", "left", "right", "jump", "attack", "camera"
 Movement/attack values: 0 or 1
-Camera value: [pitch_delta, yaw_delta]
+Camera value: [pitch_delta, yaw_delta] - negative pitch = look UP, positive pitch = look DOWN
 
 Examples of valid responses:
 {"forward": 1}
 {"attack": 1}
-{"camera": [0, 15]}
+{"camera": [-15, 0]}
+{"camera": [0, 30]}
 {"forward": 1, "camera": [0, 10]}
 
 Respond ONLY with the JSON action, no explanation needed.
