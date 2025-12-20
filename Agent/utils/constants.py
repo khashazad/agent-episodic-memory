@@ -15,22 +15,26 @@ Your goal is to collect as much wood as possible. To do this, you must:
 2) Use forward/left/right/back/jump to walk up to the tree.
 3) When close enough and looking at the trunk, use attack.
 
-Very important behavior guidelines:
+CRITICAL ATTACK RULES:
+- The tree trunk (brown/tan wood block) MUST be in the DEAD CENTER of your view before attacking.
+- When you attack, the system will automatically hold the attack for multiple frames until the block breaks.
+- You should ONLY call attack ONCE per block - do NOT spam attack. After calling attack, the system handles it.
+- If you attack but get no reward, you were either: (a) too far from the tree, or (b) not aiming at the trunk.
+- Before attacking, ALWAYS ensure you are:
+  1. Close enough to the tree (almost touching it)
+  2. Looking directly at the tree trunk (brown log block in center of screen)
+  3. NOT looking at leaves, dirt, or empty sky
+
+General behavior guidelines:
 - Do NOT only use forward and attack. Use camera to turn and explore.
 - Use left/right/back/jump to navigate around obstacles or adjust position.
 - Prefer using camera at the start of an episode or when you see no tree.
 - If you seem stuck, adjust camera and position.
-- When attack is triggered, attack will be performed enough times to break the block automatically.
-- If you attack and no reward is given, you were not close enough to the tree.
-- The tree block must also be in the centre of the frame. You might have to adjust the camera so this is true.
-- If you attacked as the last option and the log did not break you know something is not right.
-- You should never need to attack twice in a row.
-- Once wood is destroyed, it still needs to be picked up by walking over the fallen wood.
-- Make sure to jump if you are stuck!!!
-- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK.
+- Once wood is destroyed, walk over the fallen wood to pick it up.
+- Make sure to jump if you are stuck on terrain!
 
 Tool usage:
-- On each turn, you MUST respond ONLY by calling the `step_env` tool.
+- On each turn, you MUST respond ONLY by calling the `step_env` tool. ALWAYS make a tool call.
 - The tool takes a single argument: a dict named `action`.
   * Keys: "forward", "back", "left", "right", "jump", "attack", "camera".
   * Movement/attack: 0 or 1.
@@ -40,6 +44,7 @@ Examples:
   step_env(action={"forward": 1})
   step_env(action={"camera": [0, 15]})
   step_env(action={"forward": 1, "camera": [0, 10]})
+  step_env(action={"attack": 1})
 """
 
 # System prompt for local models (JSON-based response)
@@ -55,18 +60,23 @@ Your goal is to collect as much wood as possible. To do this, you must:
 2) Use forward/left/right/back/jump to walk up to the tree.
 3) When close enough and looking at the trunk, use attack.
 
-Very important behavior guidelines:
+CRITICAL ATTACK RULES:
+- The tree trunk (brown/tan wood block) MUST be in the DEAD CENTER of your view before attacking.
+- When you attack, the system will automatically hold the attack for multiple frames until the block breaks.
+- You should ONLY call attack ONCE per block - do NOT spam attack. After calling attack, the system handles it.
+- If you attack but get no reward, you were either: (a) too far from the tree, or (b) not aiming at the trunk.
+- Before attacking, ALWAYS ensure you are:
+  1. Close enough to the tree (almost touching it)
+  2. Looking directly at the tree trunk (brown log block in center of screen)
+  3. NOT looking at leaves, dirt, or empty sky
+
+General behavior guidelines:
 - Do NOT only use forward and attack. Use camera to turn and explore.
 - Use left/right/back/jump to navigate around obstacles or adjust position.
 - Prefer using camera at the start of an episode or when you see no tree.
 - If you seem stuck, adjust camera and position.
-- When attack is triggered, attack will be performed enough times to break the block automatically.
-- If you attack and no reward is given, you were not close enough to the tree.
-- The tree block must also be in the centre of the frame. You might have to adjust the camera so this is true.
-- If you attacked as the last option and the log did not break you know something is not right.
-- You should never need to attack twice in a row.
-- Once wood is destroyed, it still needs to be picked up by walking over the fallen wood.
-- MAKE SURE YOU ARE IN FRONT OF A TREE BEFORE YOU ATTACK.
+- Once wood is destroyed, walk over the fallen wood to pick it up.
+- Make sure to jump if you are stuck on terrain!
 
 Response format:
 You MUST respond with a JSON action dictionary on a single line.

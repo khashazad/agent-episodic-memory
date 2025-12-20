@@ -431,6 +431,12 @@ FRAME_HISTORY = deque(maxlen=16)
 
 CAMERA_STATE = {"pitch": 0.0, "yaw": 0.0}
 
+# Sustained attack mechanism - breaking wood requires holding attack
+SUSTAINED_ATTACK_STATE = {
+    "frames_remaining": 0,
+    "target_frames": 12,  # Hold attack for 12 frames to break wood block
+}
+
 # For rendering the frames
 _RENDER = {
     "fig": None,
@@ -939,16 +945,64 @@ def format_user_msg(context: str, memory_str: str | None = None, obs: str | None
 # Agent episode runner
 # =============================================================================
 
+def should_sustain_attack() -> bool:
+    """Check if we should continue a sustained attack."""
+    return SUSTAINED_ATTACK_STATE["frames_remaining"] > 0
+
+
+def start_sustained_attack():
+    """Start a sustained attack sequence."""
+    SUSTAINED_ATTACK_STATE["frames_remaining"] = SUSTAINED_ATTACK_STATE["target_frames"]
+    print(f"  [Sustained Attack] Starting attack sequence ({SUSTAINED_ATTACK_STATE['target_frames']} frames)")
+
+
+def continue_sustained_attack():
+    """Continue the sustained attack, decrement counter."""
+    SUSTAINED_ATTACK_STATE["frames_remaining"] -= 1
+    remaining = SUSTAINED_ATTACK_STATE["frames_remaining"]
+    print(f"  [Sustained Attack] Continuing attack ({remaining} frames remaining)")
+
+
+def reset_sustained_attack():
+    """Reset sustained attack on reward (block broken)."""
+    SUSTAINED_ATTACK_STATE["frames_remaining"] = 0
+
+
+def check_rag_suggests_attack(memory_str: str) -> bool:
+    """Check if RAG memory suggests attacking."""
+    attack_keywords = ["attack", "hitting", "breaking", "mining", "chopping"]
+    memory_lower = memory_str.lower()
+    return any(keyword in memory_lower for keyword in attack_keywords)
+
+
 def run_agent_episode(agent, obs):
     """Run a single agent episode step."""
     reward = 0
     done = False
 
+    # Check if we're in a sustained attack sequence
+    if should_sustain_attack():
+        continue_sustained_attack()
+        result = step_env.invoke({"action": {"attack": 1}})
+        obs = result["obs"]
+        reward = result["reward"]
+        done = result["done"]
+
+        # If we got a reward, the block broke - reset sustained attack
+        if reward > 0:
+            print("  [Sustained Attack] Block broken! Resetting attack sequence.")
+            reset_sustained_attack()
+
+        FRAME_HISTORY.append(obs)
+        return obs, reward, done
+
     # Query episodic memory using fused embeddings if available
     memory_str = "No episodic memory yet (not enough frames)."
+    rag_suggests_attack = False
     if USE_RAG and rag and len(FRAME_HISTORY) == 16:
         print("\nQuerying episodic memory with fused embedding...")
         memory_str = rag.get_action(list(FRAME_HISTORY))
+        rag_suggests_attack = check_rag_suggests_attack(memory_str)
 
     context = ""
     user_msg = format_user_msg(context, memory_str=memory_str, obs=obs)
@@ -973,11 +1027,19 @@ def run_agent_episode(agent, obs):
                 raise
 
     if ai_msg is None:
-        print("Warning: Failed to get response from model after retries. Skipping action (no-op).")
+        print("Warning: Failed to get response from model after retries.")
+        # Fallback: if RAG suggests attack, do attack
+        if rag_suggests_attack:
+            print("  Fallback: RAG suggests attack, initiating sustained attack.")
+            start_sustained_attack()
+            result = step_env.invoke({"action": {"attack": 1}})
+            FRAME_HISTORY.append(result["obs"])
+            return result["obs"], result["reward"], result["done"]
         FRAME_HISTORY.append(obs)
         return obs, 0, False
 
     action_executed = False
+    executed_action = None
 
     # Try standard tool_calls first
     if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
@@ -999,6 +1061,8 @@ def run_agent_episode(agent, obs):
                     FRAME_HISTORY.append(obs)
                     return obs, 0, False
 
+                executed_action = action_value
+
                 try:
                     result = step_env.invoke(raw_args)
                     obs = result["obs"]
@@ -1017,6 +1081,7 @@ def run_agent_episode(agent, obs):
 
         if parsed_action:
             print(f"Parsed action from text: {parsed_action}")
+            executed_action = parsed_action
             result = step_env.invoke({"action": parsed_action})
             obs = result["obs"]
             reward = result["reward"]
@@ -1024,13 +1089,38 @@ def run_agent_episode(agent, obs):
             action_executed = True
         else:
             print(f"Warning: Could not parse action from model output: {text_content[:300]}...")
+            # Fallback: if RAG suggests attack, do attack
+            if rag_suggests_attack:
+                print("  Fallback: RAG suggests attack, initiating sustained attack.")
+                start_sustained_attack()
+                result = step_env.invoke({"action": {"attack": 1}})
+                FRAME_HISTORY.append(result["obs"])
+                return result["obs"], result["reward"], result["done"]
             print("Skipping action (no-op).")
             FRAME_HISTORY.append(obs)
             return obs, 0, False
     elif not action_executed and USE_OPENAI_LLM:
-        print("Warning: OpenAI model did not make a tool call. Skipping action (no-op).")
+        print("Warning: OpenAI model did not make a tool call.")
+        # Fallback: if RAG suggests attack or we were recently attacking, continue attack
+        last_action_was_attack = (
+            ACTION_HISTORY and
+            ACTION_HISTORY[-1].get("action", {}).get("attack", 0) == 1
+        )
+        if rag_suggests_attack or last_action_was_attack:
+            print("  Fallback: Continuing/initiating attack based on RAG or previous action.")
+            start_sustained_attack()
+            result = step_env.invoke({"action": {"attack": 1}})
+            FRAME_HISTORY.append(result["obs"])
+            return result["obs"], result["reward"], result["done"]
+        print("Skipping action (no-op).")
         FRAME_HISTORY.append(obs)
         return obs, 0, False
+
+    # If the model chose to attack, start sustained attack sequence
+    if executed_action and executed_action.get("attack", 0) == 1:
+        start_sustained_attack()
+        # Already executed one attack, so decrement
+        SUSTAINED_ATTACK_STATE["frames_remaining"] -= 1
 
     FRAME_HISTORY.append(obs)
 
@@ -1103,6 +1193,7 @@ def run_agent():
         cur_frames = 0
         ACTION_HISTORY.clear()
         FRAME_HISTORY.clear()
+        reset_sustained_attack()  # Reset attack state for new run
 
         if run_idx < TEST_RUNS - 1:
             obs = reset_env()
