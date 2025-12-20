@@ -431,11 +431,9 @@ FRAME_HISTORY = deque(maxlen=16)
 
 CAMERA_STATE = {"pitch": 0.0, "yaw": 0.0}
 
-# Sustained attack mechanism - breaking wood requires holding attack
-SUSTAINED_ATTACK_STATE = {
-    "frames_remaining": 0,
-    "target_frames": 12,  # Hold attack for 12 frames to break wood block
-}
+# Note: The server already handles attack repetition (15 ticks per attack action)
+# so we don't need agent-side sustained attacks. The agent just needs to
+# send attack once and the server will hold it long enough to break blocks.
 
 # For rendering the frames
 _RENDER = {
@@ -945,27 +943,7 @@ def format_user_msg(context: str, memory_str: str | None = None, obs: str | None
 # Agent episode runner
 # =============================================================================
 
-def should_sustain_attack() -> bool:
-    """Check if we should continue a sustained attack."""
-    return SUSTAINED_ATTACK_STATE["frames_remaining"] > 0
-
-
-def start_sustained_attack():
-    """Start a sustained attack sequence."""
-    SUSTAINED_ATTACK_STATE["frames_remaining"] = SUSTAINED_ATTACK_STATE["target_frames"]
-    print(f"  [Sustained Attack] Starting attack sequence ({SUSTAINED_ATTACK_STATE['target_frames']} frames)")
-
-
-def continue_sustained_attack():
-    """Continue the sustained attack, decrement counter."""
-    SUSTAINED_ATTACK_STATE["frames_remaining"] -= 1
-    remaining = SUSTAINED_ATTACK_STATE["frames_remaining"]
-    print(f"  [Sustained Attack] Continuing attack ({remaining} frames remaining)")
-
-
-def reset_sustained_attack():
-    """Reset sustained attack on reward (block broken)."""
-    SUSTAINED_ATTACK_STATE["frames_remaining"] = 0
+# Note: Sustained attack functions removed - server handles attack repetition automatically
 
 
 def check_rag_suggests_attack(memory_str: str) -> bool:
@@ -999,25 +977,14 @@ def get_pitch_correction_action() -> dict:
 
 
 def run_agent_episode(agent, obs):
-    """Run a single agent episode step."""
+    """Run a single agent episode step.
+
+    Note: The server already handles attack repetition (15 ticks per attack),
+    so we don't need agent-side sustained attacks. One attack action is enough
+    to break a block.
+    """
     reward = 0
     done = False
-
-    # Check if we're in a sustained attack sequence
-    if should_sustain_attack():
-        continue_sustained_attack()
-        result = step_env.invoke({"action": {"attack": 1}})
-        obs = result["obs"]
-        reward = result["reward"]
-        done = result["done"]
-
-        # If we got a reward, the block broke - reset sustained attack
-        if reward > 0:
-            print("  [Sustained Attack] Block broken! Resetting attack sequence.")
-            reset_sustained_attack()
-
-        FRAME_HISTORY.append(obs)
-        return obs, reward, done
 
     # Query episodic memory using fused embeddings if available
     memory_str = "No episodic memory yet (not enough frames)."
@@ -1070,8 +1037,7 @@ def run_agent_episode(agent, obs):
                 FRAME_HISTORY.append(result["obs"])
                 return result["obs"], result["reward"], result["done"]
             else:
-                print("  Fallback: RAG suggests attack, initiating sustained attack.")
-                start_sustained_attack()
+                print("  Fallback: RAG suggests attack, executing attack.")
                 result = step_env.invoke({"action": {"attack": 1}})
                 FRAME_HISTORY.append(result["obs"])
                 return result["obs"], result["reward"], result["done"]
@@ -1079,7 +1045,6 @@ def run_agent_episode(agent, obs):
         return obs, 0, False
 
     action_executed = False
-    executed_action = None
 
     # Try standard tool_calls first
     if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
@@ -1101,7 +1066,17 @@ def run_agent_episode(agent, obs):
                     FRAME_HISTORY.append(obs)
                     return obs, 0, False
 
-                executed_action = action_value
+                # Check if attack action needs pitch correction first
+                if action_value.get("attack", 0) == 1:
+                    looking_down = check_looking_down(current_description) if current_description else False
+                    pitch_too_low = needs_pitch_correction()
+
+                    if looking_down or pitch_too_low:
+                        print("  [Attack Prep] Looking down detected. Correcting pitch before attacking...")
+                        correction_action = get_pitch_correction_action()
+                        result = step_env.invoke({"action": correction_action})
+                        FRAME_HISTORY.append(result["obs"])
+                        return result["obs"], result["reward"], result["done"]
 
                 try:
                     result = step_env.invoke(raw_args)
@@ -1121,7 +1096,19 @@ def run_agent_episode(agent, obs):
 
         if parsed_action:
             print(f"Parsed action from text: {parsed_action}")
-            executed_action = parsed_action
+
+            # Check if attack action needs pitch correction first
+            if parsed_action.get("attack", 0) == 1:
+                looking_down = check_looking_down(current_description) if current_description else False
+                pitch_too_low = needs_pitch_correction()
+
+                if looking_down or pitch_too_low:
+                    print("  [Attack Prep] Looking down detected. Correcting pitch before attacking...")
+                    correction_action = get_pitch_correction_action()
+                    result = step_env.invoke({"action": correction_action})
+                    FRAME_HISTORY.append(result["obs"])
+                    return result["obs"], result["reward"], result["done"]
+
             result = step_env.invoke({"action": parsed_action})
             obs = result["obs"]
             reward = result["reward"]
@@ -1141,8 +1128,7 @@ def run_agent_episode(agent, obs):
                     FRAME_HISTORY.append(result["obs"])
                     return result["obs"], result["reward"], result["done"]
                 else:
-                    print("  Fallback: RAG suggests attack, initiating sustained attack.")
-                    start_sustained_attack()
+                    print("  Fallback: RAG suggests attack, executing attack.")
                     result = step_env.invoke({"action": {"attack": 1}})
                     FRAME_HISTORY.append(result["obs"])
                     return result["obs"], result["reward"], result["done"]
@@ -1151,7 +1137,7 @@ def run_agent_episode(agent, obs):
             return obs, 0, False
     elif not action_executed and USE_OPENAI_LLM:
         print("Warning: OpenAI model did not make a tool call.")
-        # Fallback: if RAG suggests attack or we were recently attacking, continue attack
+        # Fallback: if RAG suggests attack or we were recently attacking, do attack
         last_action_was_attack = (
             ACTION_HISTORY and
             ACTION_HISTORY[-1].get("action", {}).get("attack", 0) == 1
@@ -1167,35 +1153,13 @@ def run_agent_episode(agent, obs):
                 FRAME_HISTORY.append(result["obs"])
                 return result["obs"], result["reward"], result["done"]
             else:
-                print("  Fallback: Continuing/initiating attack based on RAG or previous action.")
-                start_sustained_attack()
+                print("  Fallback: Executing attack based on RAG or previous action.")
                 result = step_env.invoke({"action": {"attack": 1}})
                 FRAME_HISTORY.append(result["obs"])
                 return result["obs"], result["reward"], result["done"]
         print("Skipping action (no-op).")
         FRAME_HISTORY.append(obs)
         return obs, 0, False
-
-    # If the model chose to attack, check if we need pitch correction first
-    if executed_action and executed_action.get("attack", 0) == 1:
-        # Check if we're looking down (at ground instead of tree trunk)
-        looking_down = check_looking_down(current_description) if current_description else False
-        pitch_too_low = needs_pitch_correction()
-
-        if looking_down or pitch_too_low:
-            # Don't start sustained attack yet - correct pitch first
-            print("  [Attack Prep] Looking down detected. Correcting pitch before attacking...")
-            correction_action = get_pitch_correction_action()
-            result = step_env.invoke({"action": correction_action})
-            obs = result["obs"]
-            reward = result["reward"]
-            done = result["done"]
-            # Don't start sustained attack - let next frame re-evaluate
-        else:
-            # Good camera angle - start sustained attack
-            start_sustained_attack()
-            # Already executed one attack, so decrement
-            SUSTAINED_ATTACK_STATE["frames_remaining"] -= 1
 
     FRAME_HISTORY.append(obs)
 
@@ -1268,7 +1232,6 @@ def run_agent():
         cur_frames = 0
         ACTION_HISTORY.clear()
         FRAME_HISTORY.clear()
-        reset_sustained_attack()  # Reset attack state for new run
 
         if run_idx < TEST_RUNS - 1:
             obs = reset_env()
