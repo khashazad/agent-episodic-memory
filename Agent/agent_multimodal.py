@@ -397,6 +397,7 @@ RENDER = os.environ.get("RENDER", "false").lower() == "true"
 TEST_RUNS = int(os.environ.get("TEST_RUNS", "5"))
 MAX_FRAMES = int(os.environ.get("MAX_FRAMES", "500"))
 USE_MAX_FRAMES = os.environ.get("USE_MAX_FRAMES", "true").lower() == "true"
+RESTART_THRESHOLD = int(os.environ.get("RESTART_THRESHOLD", "200"))  # Restart if no wood within this many frames
 
 # Remote server configuration
 USE_REMOTE_SERVER = os.environ.get("USE_REMOTE_SERVER", "false").lower() == "true"
@@ -418,6 +419,7 @@ print(f"  RAG Config: {RAG_CONFIG}")
 print(f"  Render: {RENDER}")
 print(f"  Test Runs: {TEST_RUNS}")
 print(f"  Max Frames: {MAX_FRAMES}")
+print(f"  Restart Threshold: {RESTART_THRESHOLD}")
 print(f"  Use Remote Server: {USE_REMOTE_SERVER}")
 print(f"  Server URL: {SERVER_URL}")
 
@@ -1201,12 +1203,14 @@ def run_agent():
     wood_count = 0
     cur_frames = 0
 
-    for run_idx in range(TEST_RUNS):
+    run_idx = 0
+    while run_idx < TEST_RUNS:
         print(f"\n{'='*50}")
         print(f"Starting run {run_idx + 1}/{TEST_RUNS}")
         print(f"{'='*50}\n")
 
         done = False
+        restart_run = False
 
         while not done:
             obs, reward, done = run_agent_episode(agent, obs)
@@ -1221,9 +1225,24 @@ def run_agent():
             cur_frames += 1
             print(f'Frame {cur_frames}')
 
+            # Check if no wood collected within the restart threshold
+            if cur_frames >= RESTART_THRESHOLD and wood_count == 0:
+                print(f"\n[RESTART] No wood collected within first {RESTART_THRESHOLD} frames. Restarting run in new environment...")
+                restart_run = True
+                break
+
             if USE_MAX_FRAMES and cur_frames >= MAX_FRAMES:
                 cur_frames = 0
                 break
+
+        if restart_run:
+            # Reset for a new attempt without counting this as a completed run
+            wood_count = 0
+            cur_frames = 0
+            ACTION_HISTORY.clear()
+            FRAME_HISTORY.clear()
+            obs = reset_env()
+            continue  # Retry the same run_idx
 
         log_result(wood_count)
         print(f"\nRun {run_idx + 1} complete. Wood collected: {wood_count}")
@@ -1235,6 +1254,8 @@ def run_agent():
 
         if run_idx < TEST_RUNS - 1:
             obs = reset_env()
+
+        run_idx += 1
 
     print("\nAll runs complete!")
 
