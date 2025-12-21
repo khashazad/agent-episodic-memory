@@ -60,7 +60,8 @@ services:
     networks:
       - agent-network
 
-  # Model server for Qwen VL and MineCLIP embeddings
+  # Model server for Qwen VL and MineCLIP embeddings (CPU mode)
+  # For GPU support, use: docker compose up model-server-gpu
   model-server:
     build:
       context: .
@@ -78,16 +79,39 @@ services:
       - TOKENIZERS_PARALLELISM=false
       - MINECLIP_CHECKPOINT=/app/.ckpts/attn.pth
       - QWEN_MODEL_ID=Qwen/Qwen2.5-VL-7B-Instruct
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     networks:
       - agent-network
     restart: unless-stopped
+
+  # Model server with GPU support
+  # Use: docker compose up model-server-gpu
+  # model-server-gpu:
+  #   build:
+  #     context: .
+  #     dockerfile: ModelServer/Dockerfile
+  #   container_name: vlm-model-server
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - ./.ckpts:/app/.ckpts:ro              # MineCLIP checkpoint
+  #     - ./MineCLIP:/app/MineCLIP:ro          # MineCLIP module
+  #     - model-cache:/root/.cache             # HuggingFace model cache
+  #   environment:
+  #     - TRANSFORMERS_CACHE=/root/.cache/huggingface
+  #     - HF_HOME=/root/.cache/huggingface
+  #     - TOKENIZERS_PARALLELISM=false
+  #     - MINECLIP_CHECKPOINT=/app/.ckpts/attn.pth
+  #     - QWEN_MODEL_ID=Qwen/Qwen2.5-VL-7B-Instruct
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   networks:
+  #     - agent-network
+  #   restart: unless-stopped
 
 networks:
   agent-network:
