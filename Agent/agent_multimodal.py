@@ -1003,9 +1003,17 @@ def run_agent_episode(agent, obs):
     memory_str = "No episodic memory yet (not enough frames)."
     rag_suggests_attack = False
     current_description = ""
-    if USE_RAG and rag and len(FRAME_HISTORY) == 16:
-        print("\nQuerying episodic memory with fused embedding...")
-        memory_str = rag.get_action(list(FRAME_HISTORY))
+    if USE_RAG and rag and len(FRAME_HISTORY) > 0:
+        # Pad frame buffer to 16 frames by duplicating first frame if needed
+        frames_list = list(FRAME_HISTORY)
+        if len(frames_list) < 16:
+            first_frame = frames_list[0]
+            padding_needed = 16 - len(frames_list)
+            frames_list = [first_frame] * padding_needed + frames_list
+            print(f"\nQuerying episodic memory with fused embedding (padded {padding_needed} frames)...")
+        else:
+            print("\nQuerying episodic memory with fused embedding...")
+        memory_str = rag.get_action(frames_list)
         # Extract current description from memory string
         if "Current observation:" in memory_str:
             try:
