@@ -12,13 +12,6 @@ services:
       - ALLOW_RESET=TRUE
     networks:
       - agent-network
-    # healthcheck:
-    #   test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat')\""]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 5
-    #   start_period: 10s
-
   # Seeder service - runs once on first database creation
   chromadb-seeder:
     build:
@@ -37,33 +30,7 @@ services:
       - agent-network
     restart: "no"  # Run once and exit
 
-  # minerl-env:
-  #   platform: linux/amd64
-  #   image: strangeman44/minerl-env-server:latest
-  #   container_name: minecraft-env
-  #   mem_limit: 8g
-  #   memswap_limit: 8g
-  #   shm_size: 2g
-  #   ports:
-  #     - "5001:5000"
-  #   environment:
-  #     - DISPLAY=:99
-  #     - JAVA_OPTS=-Xmx3G -Xms1G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap
-  #     - _JAVA_OPTIONS=-Xmx3G -Xms1G -XX:+UseSerialGC -XX:+DisableExplicitGC -Djava.awt.headless=true
-  #     - MALLOC_ARENA_MAX=2
-  #   ulimits:
-  #     core: 0
-  #     nofile:
-  #       soft: 65536
-  #       hard: 65536
-  #     memlock:
-  #       soft: -1
-  #       hard: -1
-  #   networks:
-  #     - agent-network
-  #   # depends_on:
-  #     # chromadb:
-  #       # condition: service_healthy
+
 
   # Multi-environment server (supports multiple concurrent agents)
   minerl-multi-env:
@@ -93,6 +60,35 @@ services:
     networks:
       - agent-network
 
+  # Model server for Qwen VL and MineCLIP embeddings
+  model-server:
+    build:
+      context: .
+      dockerfile: ModelServer/Dockerfile
+    container_name: vlm-model-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./.ckpts:/app/.ckpts:ro              # MineCLIP checkpoint
+      - ./MineCLIP:/app/MineCLIP:ro          # MineCLIP module
+      - model-cache:/root/.cache             # HuggingFace model cache
+    environment:
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - HF_HOME=/root/.cache/huggingface
+      - TOKENIZERS_PARALLELISM=false
+      - MINECLIP_CHECKPOINT=/app/.ckpts/attn.pth
+      - QWEN_MODEL_ID=Qwen/Qwen2.5-VL-7B-Instruct
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - agent-network
+    restart: unless-stopped
+
 networks:
   agent-network:
     driver: bridge
@@ -100,4 +96,6 @@ networks:
 
 volumes:
   chroma-data:
+    driver: local
+  model-cache:
     driver: local

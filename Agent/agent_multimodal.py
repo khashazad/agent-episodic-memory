@@ -399,10 +399,15 @@ MAX_FRAMES = int(os.environ.get("MAX_FRAMES", "500"))
 USE_MAX_FRAMES = os.environ.get("USE_MAX_FRAMES", "true").lower() == "true"
 RESTART_THRESHOLD = int(os.environ.get("RESTART_THRESHOLD", "200"))  # Restart if no wood within this many frames
 
-# Remote server configuration
+# Remote MineRL server configuration
 USE_REMOTE_SERVER = os.environ.get("USE_REMOTE_SERVER", "false").lower() == "true"
 SERVER_URL = os.environ.get("MINERL_SERVER_URL", "http://127.0.0.1:5001")
 ENV_ID = None
+
+# Remote model server configuration (for Qwen VL + MineCLIP)
+USE_REMOTE_MODEL_SERVER = os.environ.get("USE_REMOTE_MODEL_SERVER", "false").lower() == "true"
+MODEL_SERVER_URL = os.environ.get("MODEL_SERVER_URL", "http://localhost:8080")
+MODEL_SERVER_TIMEOUT = int(os.environ.get("MODEL_SERVER_TIMEOUT", "120"))
 
 print("Configuration:")
 print(f"  Use OpenAI LLM: {USE_OPENAI_LLM}")
@@ -420,8 +425,12 @@ print(f"  Render: {RENDER}")
 print(f"  Test Runs: {TEST_RUNS}")
 print(f"  Max Frames: {MAX_FRAMES}")
 print(f"  Restart Threshold: {RESTART_THRESHOLD}")
-print(f"  Use Remote Server: {USE_REMOTE_SERVER}")
-print(f"  Server URL: {SERVER_URL}")
+print(f"  Use Remote MineRL Server: {USE_REMOTE_SERVER}")
+print(f"  MineRL Server URL: {SERVER_URL}")
+print(f"  Use Remote Model Server: {USE_REMOTE_MODEL_SERVER}")
+if USE_REMOTE_MODEL_SERVER:
+    print(f"  Model Server URL: {MODEL_SERVER_URL}")
+    print(f"  Model Server Timeout: {MODEL_SERVER_TIMEOUT}s")
 
 
 # =============================================================================

@@ -1,0 +1,22 @@
+# FastAPI and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+
+# PyTorch (CUDA version will be installed via pip index)
+torch>=2.1.0
+torchvision>=0.16.0
+
+# Transformers for Qwen VL
+transformers>=4.37.0
+qwen-vl-utils>=0.0.2
+accelerate>=0.25.0
+
+# Image processing
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+pillow>=10.0.0
+
+# MineCLIP dependencies
+einops>=0.7.0
+x-transformers>=1.26.0

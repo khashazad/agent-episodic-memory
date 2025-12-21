@@ -350,18 +350,24 @@ class RAGFusedEmbedding:
     1. Generates a fused embedding from 16 frames (video + VLM description + text)
     2. Queries ChromaDB with the fused embedding
     3. Returns the next_action from the most similar past experience
+
+    Supports both local and remote model server modes.
     """
 
     def __init__(
         self,
         collection_name: str = "episodic_memory_v3",
-        target_size: tuple = (160, 256)
+        target_size: tuple = (160, 256),
+        use_remote: bool = None,
+        model_server_url: str = None
     ):
         """Initialize the RAG with fused embedding support.
 
         Args:
             collection_name: Name of the ChromaDB collection
             target_size: Target frame resolution for MineCLIP
+            use_remote: If True, use remote model server. If None, check env var.
+            model_server_url: URL of the remote model server (if use_remote=True)
         """
         self.collection_name = collection_name
         self.target_size = target_size
@@ -369,8 +375,23 @@ class RAGFusedEmbedding:
         # Initialize database connection
         self.db = self._init_database()
 
-        # Initialize fused embedding generator
-        self.embedding_generator = FusedEmbeddingGenerator()
+        # Determine if using remote model server
+        if use_remote is None:
+            use_remote = os.environ.get("USE_REMOTE_MODEL_SERVER", "false").lower() == "true"
+
+        if model_server_url is None:
+            model_server_url = os.environ.get("MODEL_SERVER_URL", "http://localhost:8080")
+
+        # Initialize fused embedding generator (local or remote)
+        if use_remote:
+            from model_client import RemoteFusedEmbeddingGenerator
+            print(f"RAGFusedEmbedding using remote model server at {model_server_url}")
+            self.embedding_generator = RemoteFusedEmbeddingGenerator(
+                server_url=model_server_url
+            )
+        else:
+            print("RAGFusedEmbedding using local FusedEmbeddingGenerator")
+            self.embedding_generator = FusedEmbeddingGenerator()
 
         # Action template for parsing
         self.action_template = {

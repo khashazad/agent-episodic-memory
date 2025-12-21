@@ -141,7 +141,9 @@ def do_action():
             attack_action = env.action_space.noop()
             attack_action['attack'] = 1
 
-            for _ in range(14):  # repeat count
+            sustained_attack_count = data.get('sustained_attack_count', 15)
+
+            for _ in range(sustained_attack_count):  # repeat count
                 if last_done:
                     break
 
