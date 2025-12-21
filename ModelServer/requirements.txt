@@ -19,4 +19,4 @@ pillow>=10.0.0
 
 # MineCLIP dependencies
 einops>=0.7.0
-x-transformers>=1.26.0
+x-transformers==0.27.1
