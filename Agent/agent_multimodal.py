@@ -772,6 +772,8 @@ def submit_action(action_dict: dict):
     if USE_REMOTE_SERVER:
         body["env_id"] = ENV_ID
 
+    body["sustained_attack_count"] = 30
+
     resp = requests.post(
         url=f"{SERVER_URL}/action",
         json=body,
