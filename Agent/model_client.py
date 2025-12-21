@@ -6,6 +6,7 @@ the remote model server instead of loading models locally.
 """
 
 import os
+import time
 from typing import Tuple, Optional
 
 import numpy as np
@@ -39,7 +40,7 @@ class RemoteFusedEmbeddingGenerator:
             os.environ.get("MODEL_SERVER_URL", "http://localhost:8080")
         ).rstrip("/")
 
-        self.timeout = timeout or int(os.environ.get("MODEL_SERVER_TIMEOUT", "120"))
+        self.timeout = timeout or int(os.environ.get("MODEL_SERVER_TIMEOUT", "300"))
 
         print(f"RemoteFusedEmbeddingGenerator initialized")
         print(f"  Server URL: {self.server_url}")
@@ -70,7 +71,7 @@ class RemoteFusedEmbeddingGenerator:
             print(f"  Warning: Unexpected error checking server: {e}")
             return False
 
-    def generate_fused_embedding(self, frames_b64: list) -> Tuple[np.ndarray, str]:
+    def generate_fused_embedding(self, frames_b64: list, max_retries: int = 3) -> Tuple[np.ndarray, str]:
         """
         Generate fused embedding from 16 base64-encoded frames.
 
@@ -78,28 +79,46 @@ class RemoteFusedEmbeddingGenerator:
 
         Args:
             frames_b64: List of 16 base64-encoded frame strings
+            max_retries: Number of retries on timeout (first request may take long for model loading)
 
         Returns:
             Tuple of (fused_embedding, description):
                 - fused_embedding: 512-dimensional numpy array
                 - description: Generated text description
         """
-        resp = requests.post(
-            f"{self.server_url}/fused-embedding",
-            json={"frames_b64": frames_b64},
-            timeout=self.timeout
-        )
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # Use longer timeout for first attempt (model loading)
+                current_timeout = self.timeout * 2 if attempt == 0 else self.timeout
 
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"Model server error: {resp.status_code} - {resp.text}"
-            )
+                resp = requests.post(
+                    f"{self.server_url}/fused-embedding",
+                    json={"frames_b64": frames_b64},
+                    timeout=current_timeout
+                )
 
-        data = resp.json()
-        embedding = np.array(data["embedding"], dtype=np.float32)
-        description = data["description"]
+                if resp.status_code != 200:
+                    raise RuntimeError(
+                        f"Model server error: {resp.status_code} - {resp.text}"
+                    )
 
-        return embedding, description
+                data = resp.json()
+                embedding = np.array(data["embedding"], dtype=np.float32)
+                description = data["description"]
+
+                return embedding, description
+
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                print(f"  Request timed out (attempt {attempt + 1}/{max_retries}). Retrying...")
+                time.sleep(2)
+            except requests.exceptions.ConnectionError as e:
+                last_error = e
+                print(f"  Connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                time.sleep(5)
+
+        raise RuntimeError(f"Failed after {max_retries} attempts: {last_error}")
 
     def encode_video(self, frames_b64: list) -> np.ndarray:
         """

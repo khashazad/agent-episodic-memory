@@ -407,7 +407,7 @@ ENV_ID = None
 # Remote model server configuration (for Qwen VL + MineCLIP)
 USE_REMOTE_MODEL_SERVER = os.environ.get("USE_REMOTE_MODEL_SERVER", "false").lower() == "true"
 MODEL_SERVER_URL = os.environ.get("MODEL_SERVER_URL", "http://localhost:8080")
-MODEL_SERVER_TIMEOUT = int(os.environ.get("MODEL_SERVER_TIMEOUT", "120"))
+MODEL_SERVER_TIMEOUT = int(os.environ.get("MODEL_SERVER_TIMEOUT", "300"))
 
 print("Configuration:")
 print(f"  Use OpenAI LLM: {USE_OPENAI_LLM}")
