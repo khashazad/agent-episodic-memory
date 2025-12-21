@@ -2,7 +2,7 @@
 # Hosts Qwen2.5-VL-7B-Instruct and MineCLIP models
 # Supports GPU (CUDA) with fallback to CPU
 
-FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.9.1-runtime-ubuntu22.04
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -32,9 +32,9 @@ COPY ModelServer/requirements.txt /app/ModelServer/requirements.txt
 
 # Install PyTorch with CUDA support first
 RUN pip install --no-cache-dir \
-    torch>=2.1.0 \
-    torchvision>=0.16.0 \
-    --index-url https://download.pytorch.org/whl/cu121
+    torch \
+    torchvision \
+    --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining requirements
 RUN pip install --no-cache-dir -r /app/ModelServer/requirements.txt
