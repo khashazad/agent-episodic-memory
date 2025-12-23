@@ -431,14 +431,16 @@ class RAGFusedEmbedding:
 
         return " + ".join(parts)
 
-    def get_action(self, obs_list_b64: list) -> str:
+    def get_action(self, obs_list_b64: list, return_debug_info: bool = False):
         """Query the database and return formatted memory context.
 
         Args:
             obs_list_b64: List of 16 base64-encoded frame strings
+            return_debug_info: If True, return tuple of (memory_str, debug_info)
 
         Returns:
-            Formatted memory context string for the LLM
+            If return_debug_info is False: Formatted memory context string
+            If return_debug_info is True: Tuple of (memory_str, debug_info dict)
         """
         # Generate fused embedding from frames
         fused_embedding, description = self.embedding_generator.generate_fused_embedding(obs_list_b64)
@@ -451,9 +453,34 @@ class RAGFusedEmbedding:
         )
 
         if not similar_results:
+            if return_debug_info:
+                return "No relevant episodic memory found.", {
+                    "current_description": description,
+                    "matched_description": None,
+                    "proposed_action": None,
+                    "similarity": None,
+                    "metadata": None,
+                }
             return "No relevant episodic memory found."
 
-        return self._format_memory_context(similar_results, description)
+        memory_str = self._format_memory_context(similar_results, description)
+
+        if return_debug_info:
+            result = similar_results[0]
+            metadata = result.get("metadata", {})
+            next_action_str = metadata.get("next_action", "{}")
+            next_action = self._parse_action(next_action_str)
+
+            debug_info = {
+                "current_description": description,
+                "matched_description": result.get("document", ""),
+                "proposed_action": next_action,
+                "similarity": result.get("similarity", 0.0),
+                "metadata": metadata,
+            }
+            return memory_str, debug_info
+
+        return memory_str
 
     def _format_memory_context(self, results: list, current_description: str) -> str:
         """Format memory context from retrieval results.

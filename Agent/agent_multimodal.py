@@ -433,6 +433,120 @@ FRAME_HISTORY = deque(maxlen=16)
 
 CAMERA_STATE = {"pitch": 0.0, "yaw": 0.0}
 
+# Debug tracking
+DEBUG_SAVE_INTERVAL = 4  # Save debug info every N frames
+DEBUG_FRAME_COUNTER = 0
+DEBUG_SAMPLE_COUNTER = 0
+DEBUG_OUTPUT_DIR = ".data/run_debug/"  # Set per run
+DATA_DIR = ".data/pipeline_output/"  # Database frames location
+
+
+def load_matched_frames_from_db(metadata: dict, data_dir: str = None) -> list:
+    """Load the 16 frames from the database that matched the query.
+
+    Args:
+        metadata: Metadata from RAG query result containing episode and chunk_index
+        data_dir: Base directory for chunked dataset
+
+    Returns:
+        List of PIL Image objects (16 frames), or empty list if not found
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    if not metadata:
+        return []
+
+    episode = metadata.get("episode", "")
+    chunk_index = metadata.get("chunk_index")
+
+    if not episode or chunk_index is None:
+        # Try parsing from window_index if chunk_index not directly available
+        chunk_index = metadata.get("window_index")
+        if chunk_index is None:
+            return []
+
+    # Convert to int if string
+    if isinstance(chunk_index, str):
+        chunk_index = int(chunk_index)
+
+    frames_dir = os.path.join(data_dir, episode, f"chunk_{chunk_index:03d}", "frames")
+
+    if not os.path.exists(frames_dir):
+        print(f"  Warning: Matched frames directory not found: {frames_dir}")
+        return []
+
+    frames = []
+    for i in range(16):
+        frame_path = os.path.join(frames_dir, f"frame_{i:02d}.png")
+        if os.path.exists(frame_path):
+            frames.append(Image.open(frame_path))
+        else:
+            print(f"  Warning: Frame not found: {frame_path}")
+
+    return frames
+
+
+def save_debug_sample(
+    observation_frames: list,
+    matched_frames: list,
+    debug_info: dict,
+    llm_action: dict,
+    sample_dir: str
+):
+    """Save debug information for a single sample.
+
+    Args:
+        observation_frames: List of base64-encoded observation frames
+        matched_frames: List of PIL Image objects from database match
+        debug_info: Debug info from RAG containing proposed action and descriptions
+        llm_action: The action actually taken by the LLM
+        sample_dir: Directory to save this sample's data
+    """
+    os.makedirs(sample_dir, exist_ok=True)
+
+    # Save observation frames as images
+    obs_frames_dir = os.path.join(sample_dir, "observation_frames")
+    os.makedirs(obs_frames_dir, exist_ok=True)
+
+    for i, frame_b64 in enumerate(observation_frames):
+        try:
+            img_data = base64.b64decode(frame_b64)
+            img = Image.open(io.BytesIO(img_data))
+            img.save(os.path.join(obs_frames_dir, f"frame_{i:02d}.png"))
+        except Exception as e:
+            print(f"  Warning: Failed to save observation frame {i}: {e}")
+
+    # Save matched frames from database
+    if matched_frames:
+        matched_frames_dir = os.path.join(sample_dir, "matched_frames")
+        os.makedirs(matched_frames_dir, exist_ok=True)
+
+        for i, img in enumerate(matched_frames):
+            try:
+                img.save(os.path.join(matched_frames_dir, f"frame_{i:02d}.png"))
+            except Exception as e:
+                print(f"  Warning: Failed to save matched frame {i}: {e}")
+
+    # Save debug info as JSON
+    metadata = debug_info.get("metadata", {}) if debug_info else {}
+    debug_json = {
+        "current_description": debug_info.get("current_description", "") if debug_info else "",
+        "matched_description": debug_info.get("matched_description", "") if debug_info else "",
+        "proposed_action": debug_info.get("proposed_action", {}) if debug_info else {},
+        "llm_action": llm_action,
+        "similarity": debug_info.get("similarity", 0.0) if debug_info else 0.0,
+        "matched_episode": metadata.get("episode", "") if metadata else "",
+        "matched_chunk_index": metadata.get("chunk_index") or metadata.get("window_index") if metadata else None,
+        "frame_range": metadata.get("frame_range", "") if metadata else "",
+    }
+
+    with open(os.path.join(sample_dir, "debug_info.json"), "w") as f:
+        json.dump(debug_json, f, indent=2)
+
+    print(f"  [Debug] Saved sample to {sample_dir}")
+
+
 # Note: The server already handles attack repetition (15 ticks per attack action)
 # so we don't need agent-side sustained attacks. The agent just needs to
 # send attack once and the server will hold it long enough to break blocks.
@@ -987,8 +1101,15 @@ def run_agent_episode(agent, obs):
     so we don't need agent-side sustained attacks. One attack action is enough
     to break a block.
     """
+    global DEBUG_FRAME_COUNTER, DEBUG_SAMPLE_COUNTER
+
     reward = 0
     done = False
+
+    # Debug tracking variables for this frame
+    debug_info = None
+    frames_for_debug = None
+    matched_frames = []
 
     # Query episodic memory using fused embeddings if available
     memory_str = "No episodic memory yet (not enough frames)."
@@ -996,7 +1117,24 @@ def run_agent_episode(agent, obs):
     current_description = ""
     if USE_RAG and rag and len(FRAME_HISTORY) == 16:
         print("\nQuerying episodic memory with fused embedding...")
-        memory_str = rag.get_action(list(FRAME_HISTORY))
+
+        frames_list = list(FRAME_HISTORY)
+
+        # Check if we should save debug info this frame
+        should_save_debug = (
+            DEBUG_OUTPUT_DIR is not None and
+            DEBUG_FRAME_COUNTER % DEBUG_SAVE_INTERVAL == 0
+        )
+
+        if should_save_debug:
+            memory_str, debug_info = rag.get_action(frames_list, return_debug_info=True)
+            frames_for_debug = frames_list.copy()
+            # Load matched frames from database
+            if debug_info and debug_info.get("metadata"):
+                matched_frames = load_matched_frames_from_db(debug_info["metadata"])
+        else:
+            memory_str = rag.get_action(frames_list)
+
         # Extract current description from memory string
         if "Current observation:" in memory_str:
             try:
@@ -1004,6 +1142,8 @@ def run_agent_episode(agent, obs):
             except (IndexError, ValueError):
                 pass
         rag_suggests_attack = check_rag_suggests_attack(memory_str)
+
+    DEBUG_FRAME_COUNTER += 1
 
     context = ""
     user_msg = format_user_msg(context, memory_str=memory_str, obs=obs)
@@ -1167,6 +1307,14 @@ def run_agent_episode(agent, obs):
 
     FRAME_HISTORY.append(obs)
 
+    # Save debug info if we collected it this frame
+    if debug_info is not None and frames_for_debug is not None and DEBUG_OUTPUT_DIR is not None:
+        sample_dir = os.path.join(DEBUG_OUTPUT_DIR, f"sample_{DEBUG_SAMPLE_COUNTER:04d}")
+        # Get the action that was executed (or empty if no action)
+        llm_action = ACTION_HISTORY[-1].get("action", {}) if ACTION_HISTORY else {}
+        save_debug_sample(frames_for_debug, matched_frames, debug_info, llm_action, sample_dir)
+        DEBUG_SAMPLE_COUNTER += 1
+
     return obs, reward, done
 
 
@@ -1176,9 +1324,20 @@ def run_agent_episode(agent, obs):
 
 def run_agent():
     """Main agent execution loop."""
+    global DEBUG_OUTPUT_DIR, DEBUG_FRAME_COUNTER, DEBUG_SAMPLE_COUNTER
+
     print("\n" + "="*50)
     print("Starting Multimodal Embedding Agent...")
     print("="*50 + "\n")
+
+    # Initialize debug output directory for this run
+    if USE_RAG:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        DEBUG_OUTPUT_DIR = os.path.join("debug_output", f"run_{timestamp}")
+        os.makedirs(DEBUG_OUTPUT_DIR, exist_ok=True)
+        DEBUG_FRAME_COUNTER = 0
+        DEBUG_SAMPLE_COUNTER = 0
+        print(f"Debug output will be saved to: {DEBUG_OUTPUT_DIR}")
 
     # Setup the agent based on configuration
     if USE_OPENAI_LLM:
