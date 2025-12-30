@@ -1,6 +1,7 @@
 config.json
 *data
 .ckpts
+.debug_output
 
 .chroma.sqlite3
 
