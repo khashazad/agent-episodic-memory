@@ -1,5 +1,7 @@
 # Agent Episodic Memory
 
+📄 [Paper](Paper.pdf)
+
 A Minecraft-playing agent with episodic memory using Retrieval-Augmented Generation (RAG). The agent is tasked to collect wood in the MineRL environment using vision-language models and vector database retrieval for episodic memory.
 
 ## Overview
